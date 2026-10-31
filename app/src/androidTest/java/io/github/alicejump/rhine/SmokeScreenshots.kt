@@ -9,6 +9,9 @@ internal object SmokeScreenshots {
     fun capture(name: String): Bitmap {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.waitForIdleSync()
+        // Allow the resized window and its accessibility events to settle before capturing
+        // SurfaceFlinger; a Compose-idle UI can still have an old rotation frame on display.
+        instrumentation.uiAutomation.waitForIdle(250, 5_000)
         val screenshot = checkNotNull(instrumentation.uiAutomation.takeScreenshot()) {
             "The emulator did not return a screenshot"
         }

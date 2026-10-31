@@ -2,6 +2,8 @@ package io.github.alicejump.rhine.testing
 
 import android.database.Cursor
 import android.database.MatrixCursor
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract.Document
@@ -22,6 +24,12 @@ class TestDocumentsProvider : DocumentsProvider() {
             File(fixtureDirectory, "tone.wav").outputStream().use { output -> input.copyTo(output) }
         }
         File(fixtureDirectory, "broken.wav").writeText("This is not an audio file.")
+        val cover = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.rgb(70, 110, 130)) }
+        try {
+            File(fixtureDirectory, "cover.png").outputStream().use { cover.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        } finally {
+            cover.recycle()
+        }
         return true
     }
 
@@ -40,8 +48,13 @@ class TestDocumentsProvider : DocumentsProvider() {
         sortOrder: String?,
     ): Cursor {
         if (parentDocumentId == "failure") throw SecurityException("Fixture document permission was revoked")
-        if (parentDocumentId !in ROOT_IDS) throw FileNotFoundException(parentDocumentId)
-        return cursor(projection, DOCUMENT_COLUMNS, listOf(document("$parentDocumentId/tone.wav"), document("$parentDocumentId/broken.wav")))
+        if (parentDocumentId !in DIRECTORY_IDS) throw FileNotFoundException(parentDocumentId)
+        val children = when {
+            parentDocumentId == "artwork" -> listOf("artwork/a", "artwork/b", "artwork/c")
+            parentDocumentId.startsWith("artwork/") -> listOf("$parentDocumentId/tone.wav", "$parentDocumentId/cover.png")
+            else -> listOf("$parentDocumentId/tone.wav", "$parentDocumentId/broken.wav")
+        }
+        return cursor(projection, DOCUMENT_COLUMNS, children.map(::document))
     }
 
     override fun isChildDocument(parentDocumentId: String, documentId: String): Boolean =
@@ -51,24 +64,25 @@ class TestDocumentsProvider : DocumentsProvider() {
         if (mode != "r") throw FileNotFoundException("The test provider is read-only")
         signal?.throwIfCanceled()
         document(documentId) // Validate the fixed fixture ID before mapping it to a private file.
-        if (documentId in ROOT_IDS) throw FileNotFoundException("Not a file")
+        if (documentId in DIRECTORY_IDS) throw FileNotFoundException("Not a file")
         return ParcelFileDescriptor.open(File(fixtureDirectory, documentId.substringAfterLast('/')), ParcelFileDescriptor.MODE_READ_ONLY)
     }
 
     private fun document(id: String): Map<String, Any?> {
-        if (id in ROOT_IDS) return mapOf(
+        if (id in DIRECTORY_IDS) return mapOf(
             Document.COLUMN_DOCUMENT_ID to id,
             Document.COLUMN_DISPLAY_NAME to "Fixture $id",
             Document.COLUMN_MIME_TYPE to Document.MIME_TYPE_DIR,
             Document.COLUMN_FLAGS to 0,
         )
-        val root = id.substringBefore('/')
-        val name = id.substringAfter('/', "")
-        if (root !in ROOT_IDS || name !in setOf("tone.wav", "broken.wav")) throw FileNotFoundException(id)
+        val root = id.substringBeforeLast('/', "")
+        val name = id.substringAfterLast('/')
+        val fileNames = if (root.startsWith("artwork/")) setOf("tone.wav", "cover.png") else setOf("tone.wav", "broken.wav")
+        if (root !in DIRECTORY_IDS || name !in fileNames) throw FileNotFoundException(id)
         return mapOf(
             Document.COLUMN_DOCUMENT_ID to id,
             Document.COLUMN_DISPLAY_NAME to name,
-            Document.COLUMN_MIME_TYPE to "audio/wav",
+            Document.COLUMN_MIME_TYPE to if (name == "cover.png") "image/png" else "audio/wav",
             Document.COLUMN_SIZE to File(fixtureDirectory, name).length(),
             Document.COLUMN_LAST_MODIFIED to 1L,
             Document.COLUMN_FLAGS to 0,
@@ -85,7 +99,7 @@ class TestDocumentsProvider : DocumentsProvider() {
     }
 
     companion object {
-        private val ROOT_IDS = setOf("music", "previous", "failure")
+        private val DIRECTORY_IDS = setOf("music", "previous", "failure", "artwork", "artwork/a", "artwork/b", "artwork/c")
         private val DOCUMENT_COLUMNS = arrayOf(
             Document.COLUMN_DOCUMENT_ID,
             Document.COLUMN_DISPLAY_NAME,

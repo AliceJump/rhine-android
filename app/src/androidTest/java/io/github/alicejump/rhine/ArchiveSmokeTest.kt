@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertTrue
@@ -63,6 +64,12 @@ class ArchiveSmokeTest {
         }
         compose.waitUntil(10_000) {
             compose.activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        }
+        // Configuration changes before the recreated Compose surface has finished resizing.
+        // Wait for the actual measured layout so CI cannot capture a cropped portrait frame.
+        compose.waitUntil(10_000) {
+            val bounds = runCatching { compose.onRoot().fetchSemanticsNode().boundsInRoot }.getOrNull()
+            bounds != null && bounds.width > bounds.height
         }
         compose.waitForIdle()
         compose.onNodeWithText("DEMO ARCHIVE / 示例档案").assertIsDisplayed()

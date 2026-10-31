@@ -9,7 +9,9 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import android.util.AtomicFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -24,6 +26,7 @@ import java.io.File
 import java.io.IOException
 import java.util.ArrayDeque
 import java.util.Locale
+import java.util.WeakHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -34,12 +37,17 @@ class MusicLibraryException(message: String, cause: Throwable? = null) : IOExcep
  * Scanning never commits the library. The caller commits its result with saveTracks together with
  * the selected tree/permission state in a non-cancellable transaction after a successful scan.
  */
-class MusicRepository(context: Context) {
+class MusicRepository internal constructor(context: Context, private val artworkCacheLimitBytes: Long) {
+    constructor(context: Context) : this(context, MAX_ARTWORK_CACHE_BYTES)
+
     private val app = context.applicationContext
     private val resolver = app.contentResolver
     private val library = AtomicFile(File(app.filesDir, "music-library-v1.json"))
     private val artworkDirectory = File(app.cacheDir, "artwork")
-    private var artworkCacheBytes = -1L
+
+    init {
+        require(artworkCacheLimitBytes > 0) { "Artwork cache limit must be positive" }
+    }
 
     /** Directory belonging to the last successfully loaded/committed library snapshot. */
     @Volatile
@@ -48,54 +56,60 @@ class MusicRepository(context: Context) {
 
     suspend fun loadTracks(): List<Track> = withContext(Dispatchers.IO) {
         cacheMutex.withLock {
-            try {
-                // openRead must run before checking the base file: older Android versions may
-                // have only AtomicFile's backup after a process is killed in the middle of a write.
-                val json = library.openRead().use { input ->
-                    if (input.channel.size() > MAX_LIBRARY_BYTES) return@withLock emptyList()
-                    input.bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
-                }
-                if (json.optInt("version") != 1) return@withLock emptyList()
-                val rows = json.optJSONArray("tracks") ?: return@withLock emptyList()
-                if (rows.length() > MAX_TRACKS) return@withLock emptyList()
-                val savedSource = if (json.isNull("sourceTreeUri")) null else {
-                    json.optString("sourceTreeUri").takeIf { it.isNotBlank() }?.let(Uri::parse)
-                        ?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT && DocumentsContract.isTreeUri(it) }
-                }
-                val checkedArtwork = mutableMapOf<String, String?>()
-                val tracks = buildList {
-                    for (index in 0 until rows.length()) {
-                        val row = rows.optJSONObject(index) ?: continue
-                        val uri = row.optString("uri")
-                        val id = row.optString("id")
-                        val albumKey = row.optString("albumKey")
-                        if (uri.isBlank() || id.isBlank() || albumKey.isBlank()) continue
-                        if (Uri.parse(uri).scheme != ContentResolver.SCHEME_CONTENT) continue
-                        val artwork = row.optString("artworkPath")
-                        if (artwork !in checkedArtwork) checkedArtwork[artwork] = safeCachedArtwork(artwork)
-                        add(
-                            Track(
-                                id = id,
-                                uri = uri,
-                                title = row.optString("title").ifBlank { "未命名曲目" },
-                                artist = row.optString("artist").ifBlank { "未知艺人" },
-                                album = row.optString("album").ifBlank { "未知专辑" },
-                                durationMs = row.optLong("durationMs").coerceAtLeast(0),
-                                artworkPath = checkedArtwork[artwork],
-                                albumKey = albumKey,
-                                trackNumber = row.optInt("trackNumber").coerceAtLeast(0),
-                            ),
-                        )
-                    }
-                }.distinctBy { it.id }
-                sourceTreeUri = savedSource
-                tracks
-            } catch (_: JSONException) {
-                // The next complete scan can recreate a corrupt/discontinued cache.
-                emptyList()
-            } catch (_: IOException) {
-                emptyList()
+            val snapshot = readSnapshot()
+            refreshCommittedArtwork(artworkState(), snapshot)
+            if (snapshot == null) return@withLock emptyList()
+            sourceTreeUri = snapshot.sourceTreeUri
+            snapshot.tracks
+        }
+    }
+
+    /** Caller holds cacheMutex, including when AtomicFile restores an interrupted write. */
+    private fun readSnapshot(): LibrarySnapshot? {
+        return try {
+            // openRead must precede existence checks: older Android versions may only have a backup.
+            val json = library.openRead().use { input ->
+                if (input.channel.size() > MAX_LIBRARY_BYTES) return null
+                input.bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
             }
+            if (json.optInt("version") != 1) return null
+            val rows = json.optJSONArray("tracks") ?: return null
+            if (rows.length() > MAX_TRACKS) return null
+            val savedSource = if (json.isNull("sourceTreeUri")) null else {
+                json.optString("sourceTreeUri").takeIf { it.isNotBlank() }?.let(Uri::parse)
+                    ?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT && DocumentsContract.isTreeUri(it) }
+            }
+            val checkedArtwork = mutableMapOf<String, String?>()
+            val tracks = buildList {
+                for (index in 0 until rows.length()) {
+                    val row = rows.optJSONObject(index) ?: continue
+                    val uri = row.optString("uri")
+                    val id = row.optString("id")
+                    val albumKey = row.optString("albumKey")
+                    if (uri.isBlank() || id.isBlank() || albumKey.isBlank()) continue
+                    if (Uri.parse(uri).scheme != ContentResolver.SCHEME_CONTENT) continue
+                    val artwork = row.optString("artworkPath")
+                    if (artwork !in checkedArtwork) checkedArtwork[artwork] = safeCachedArtwork(artwork)
+                    add(
+                        Track(
+                            id = id,
+                            uri = uri,
+                            title = row.optString("title").ifBlank { "未命名曲目" },
+                            artist = row.optString("artist").ifBlank { "未知艺人" },
+                            album = row.optString("album").ifBlank { "未知专辑" },
+                            durationMs = row.optLong("durationMs").coerceAtLeast(0),
+                            artworkPath = checkedArtwork[artwork],
+                            albumKey = albumKey,
+                            trackNumber = row.optInt("trackNumber").coerceAtLeast(0),
+                        ),
+                    )
+                }
+            }.distinctBy { it.id }
+            LibrarySnapshot(tracks, savedSource)
+        } catch (_: JSONException) {
+            null
+        } catch (_: IOException) {
+            null
         }
     }
 
@@ -130,23 +144,31 @@ class MusicRepository(context: Context) {
         currentCoroutineContext().ensureActive()
         cacheMutex.withLock {
             currentCoroutineContext().ensureActive()
+            val state = artworkState()
+            val committedArtwork = tracks.mapNotNull { it.artworkPath?.let(::safeCachedArtwork) }.toSet()
             val stream = library.startWrite()
             try {
                 stream.write(bytes)
                 currentCoroutineContext().ensureActive()
                 library.finishWrite(stream)
                 this@MusicRepository.sourceTreeUri = sourceTreeUri
+                state.committed = committedArtwork
             } catch (error: Throwable) {
                 library.failWrite(stream)
                 throw error
             }
-        }
-        // The library has committed. Cache maintenance must never make callers roll back a grant
-        // or report that saving failed after the new document URIs were already persisted.
-        try {
-            pruneArtwork(tracks.mapNotNull { it.artworkPath }.toSet())
-        } catch (_: Exception) {
-            // Artwork is expendable and bounded again on the next import.
+            // A concurrent scan can still own other candidate artwork, so only release a fully
+            // committed candidate set. All protection changes and eviction share the snapshot lock.
+            val candidate = state.candidates[this@MusicRepository]
+            if (candidate?.complete == true && candidate.paths.all { it in committedArtwork }) {
+                state.candidates.remove(this@MusicRepository)
+            }
+            // Cache maintenance cannot turn an already committed snapshot into a save failure.
+            try {
+                pruneArtwork(state, artworkCacheLimitBytes)
+            } catch (_: Exception) {
+                // Retry bounded cache maintenance on the next admission.
+            }
         }
     }
 
@@ -154,92 +176,122 @@ class MusicRepository(context: Context) {
      * Returns a candidate library without replacing the saved one. onProgress runs on the IO
      * thread with the number of imported tracks. Call saveTracks only after accepting this result.
      */
-    suspend fun scanTree(uri: Uri, onProgress: (Int) -> Unit = {}): List<Track> = withContext(Dispatchers.IO) {
-        scanMutex.withLock {
-            if (uri.scheme != ContentResolver.SCHEME_CONTENT || !DocumentsContract.isTreeUri(uri)) {
-                throw MusicLibraryException("请通过系统选择器选择一个音乐文件夹。")
-            }
-            try {
-                val treeId = DocumentsContract.getTreeDocumentId(uri)
-                val rootUri = DocumentsContract.buildDocumentUriUsingTree(uri, treeId)
-                val rootName = readRootName(rootUri)
-                val folders = ArrayDeque<Folder>()
-                folders.add(Folder(treeId, rootName))
-                val visitedFolders = mutableSetOf<String>()
-                val visitedTracks = mutableSetOf<String>()
-                val tracks = mutableListOf<Track>()
-                val albumArtwork = mutableMapOf<String, String>()
-                var visitedEntries = 0
-                var lastProgressAt = 0L
-                fun reportProgress(force: Boolean = false) {
-                    val now = System.nanoTime()
-                    if (force || now - lastProgressAt >= 100_000_000L) {
-                        lastProgressAt = now
-                        onProgress(tracks.size)
+    suspend fun scanTree(uri: Uri, onProgress: (Int) -> Unit = {}): List<Track> {
+        var candidate: CandidateArtwork? = null
+        var candidateState: ArtworkState? = null
+        try {
+            return withContext(Dispatchers.IO) {
+                scanMutex.withLock {
+                    if (uri.scheme != ContentResolver.SCHEME_CONTENT || !DocumentsContract.isTreeUri(uri)) {
+                        throw MusicLibraryException("请通过系统选择器选择一个音乐文件夹。")
                     }
-                }
-                reportProgress(force = true)
-
-                while (folders.isNotEmpty()) {
-                    currentCoroutineContext().ensureActive()
-                    val folder = folders.removeFirst()
-                    if (!visitedFolders.add(folder.id)) continue
-                    if (visitedFolders.size > MAX_FOLDERS) {
-                        throw MusicLibraryException("文件夹数量超过 $MAX_FOLDERS 个，请选择范围更小的音乐目录。")
+                    cacheMutex.withLock {
+                        val state = artworkState()
+                        // A new repository may scan before loadTracks; persisted covers must already be
+                        // protected. Other repositories may still have results awaiting a later commit.
+                        refreshCommittedArtwork(state, readSnapshot())
+                        candidate = CandidateArtwork()
+                        candidateState = state
+                        state.candidates[this@MusicRepository] = checkNotNull(candidate)
+                        state.bytes = artworkDirectory.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0
                     }
-                    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, folder.id)
-                    val children = readChildren(childrenUri, MAX_ENTRIES - visitedEntries)
-                    visitedEntries += children.size
-                    val folderUri = DocumentsContract.buildDocumentUriUsingTree(uri, folder.id)
-                    val cover = children.firstOrNull { child ->
-                        !child.directory && child.name.lowercase(Locale.ROOT) in COVER_NAMES
-                    }
-                    var folderArtworkBytes: ByteArray? = null
-                    var checkedFolderArtwork = false
-
-                    for (child in children) {
-                        currentCoroutineContext().ensureActive()
-                        if (child.directory) {
-                            folders.addLast(Folder(child.id, child.name))
-                            continue
-                        }
-                        if (!isAudioDocument(child.name, child.mime)) continue
-                        val documentUri = DocumentsContract.buildDocumentUriUsingTree(uri, child.id)
-                        if (!visitedTracks.add(documentUri.toString())) continue
-                        if (tracks.size >= MAX_TRACKS) {
-                            throw MusicLibraryException("曲目超过 $MAX_TRACKS 首，请分成更小的音乐文件夹。")
-                        }
-                        val result = readMetadata(documentUri, child, folder, folderUri, albumArtwork) ?: continue
-                        var track = result
-                        if (track.artworkPath == null && cover != null) {
-                            val coverUri = DocumentsContract.buildDocumentUriUsingTree(uri, cover.id)
-                            if (!checkedFolderArtwork) {
-                                folderArtworkBytes = readArtworkBytes(coverUri)
-                                checkedFolderArtwork = true
+                    try {
+                        val treeId = DocumentsContract.getTreeDocumentId(uri)
+                        val rootUri = DocumentsContract.buildDocumentUriUsingTree(uri, treeId)
+                        val rootName = readRootName(rootUri)
+                        val folders = ArrayDeque<Folder>()
+                        folders.add(Folder(treeId, rootName))
+                        val visitedFolders = mutableSetOf<String>()
+                        val visitedTracks = mutableSetOf<String>()
+                        val tracks = mutableListOf<Track>()
+                        val albumArtwork = mutableMapOf<String, String>()
+                        var visitedEntries = 0
+                        var lastProgressAt = 0L
+                        fun reportProgress(force: Boolean = false) {
+                            val now = System.nanoTime()
+                            if (force || now - lastProgressAt >= 100_000_000L) {
+                                lastProgressAt = now
+                                onProgress(tracks.size)
                             }
-                            folderArtworkBytes?.let { bytes ->
-                                // Document IDs are only unique inside one provider; include its URI/authority.
-                                val cacheKey = stableId("$coverUri|${cover.modified}|${cover.size}")
-                                cacheArtwork(bytes, cacheKey)?.let { path ->
-                                    albumArtwork[track.albumKey] = path
-                                    track = track.copy(artworkPath = path)
+                        }
+                        reportProgress(force = true)
+
+                        while (folders.isNotEmpty()) {
+                            currentCoroutineContext().ensureActive()
+                            val folder = folders.removeFirst()
+                            if (!visitedFolders.add(folder.id)) continue
+                            if (visitedFolders.size > MAX_FOLDERS) {
+                                throw MusicLibraryException("文件夹数量超过 $MAX_FOLDERS 个，请选择范围更小的音乐目录。")
+                            }
+                            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, folder.id)
+                            val children = readChildren(childrenUri, MAX_ENTRIES - visitedEntries)
+                            visitedEntries += children.size
+                            val folderUri = DocumentsContract.buildDocumentUriUsingTree(uri, folder.id)
+                            val cover = children.firstOrNull { child ->
+                                !child.directory && child.name.lowercase(Locale.ROOT) in COVER_NAMES
+                            }
+                            var folderArtworkBytes: ByteArray? = null
+                            var checkedFolderArtwork = false
+
+                            for (child in children) {
+                                currentCoroutineContext().ensureActive()
+                                if (child.directory) {
+                                    folders.addLast(Folder(child.id, child.name))
+                                    continue
                                 }
+                                if (!isAudioDocument(child.name, child.mime)) continue
+                                val documentUri = DocumentsContract.buildDocumentUriUsingTree(uri, child.id)
+                                if (!visitedTracks.add(documentUri.toString())) continue
+                                if (tracks.size >= MAX_TRACKS) {
+                                    throw MusicLibraryException("曲目超过 $MAX_TRACKS 首，请分成更小的音乐文件夹。")
+                                }
+                                val result = readMetadata(documentUri, child, folder, folderUri, albumArtwork) ?: continue
+                                var track = result
+                                if (track.artworkPath == null && cover != null) {
+                                    val coverUri = DocumentsContract.buildDocumentUriUsingTree(uri, cover.id)
+                                    if (!checkedFolderArtwork) {
+                                        folderArtworkBytes = readArtworkBytes(coverUri)
+                                        checkedFolderArtwork = true
+                                    }
+                                    folderArtworkBytes?.let { bytes ->
+                                        // Document IDs are only unique inside one provider; include its URI/authority.
+                                        val cacheKey = stableId("$coverUri|${cover.modified}|${cover.size}")
+                                        cacheArtwork(bytes, cacheKey)?.let { path ->
+                                            albumArtwork[track.albumKey] = path
+                                            track = track.copy(artworkPath = path)
+                                        }
+                                    }
+                                }
+                                tracks += track
+                                reportProgress()
                             }
                         }
-                        tracks += track
-                        reportProgress()
+                        currentCoroutineContext().ensureActive()
+                        // A later track may contain the album cover that earlier tracks did not.
+                        val complete = tracks.map { track ->
+                            if (track.artworkPath == null) track.copy(artworkPath = albumArtwork[track.albumKey]) else track
+                        }
+                        cacheMutex.withLock { candidate?.complete = true }
+                        reportProgress(force = true)
+                        complete
+                    } catch (error: SecurityException) {
+                        throw MusicLibraryException("音乐文件夹的访问权限已失效，请重新选择文件夹。", error)
                     }
                 }
-                currentCoroutineContext().ensureActive()
-                // A later track may contain the album cover that earlier tracks did not.
-                val complete = tracks.map { track ->
-                    if (track.artworkPath == null) track.copy(artworkPath = albumArtwork[track.albumKey]) else track
-                }
-                reportProgress(force = true)
-                complete
-            } catch (error: SecurityException) {
-                throw MusicLibraryException("音乐文件夹的访问权限已失效，请重新选择文件夹。", error)
             }
+        } catch (error: Throwable) {
+            // Also handles cancellation while dispatching a successful IO result back to Main.
+            // A later scan on the same repository must not have its newer candidate lease removed.
+            withContext(NonCancellable + Dispatchers.IO) {
+                cacheMutex.withLock {
+                    candidateState?.let { state ->
+                        if (state.candidates[this@MusicRepository] === candidate) {
+                            state.candidates.remove(this@MusicRepository)
+                        }
+                    }
+                }
+            }
+            throw error
         }
     }
 
@@ -291,7 +343,7 @@ class MusicRepository(context: Context) {
             }
         }
 
-    private fun readMetadata(
+    private suspend fun readMetadata(
         uri: Uri,
         document: Document,
         folder: Folder,
@@ -331,6 +383,8 @@ class MusicRepository(context: Context) {
             )
         } catch (error: SecurityException) {
             throw error
+        } catch (error: CancellationException) {
+            throw error
         } catch (_: RuntimeException) {
             // A corrupt/unsupported track must not abort an otherwise usable folder import.
             null
@@ -361,15 +415,10 @@ class MusicRepository(context: Context) {
         null
     }
 
-    private fun cacheArtwork(bytes: ByteArray, key: String): String? {
+    private suspend fun cacheArtwork(bytes: ByteArray, key: String): String? {
         if (bytes.isEmpty() || bytes.size > MAX_ARTWORK_INPUT_BYTES) return null
-        if (!artworkDirectory.isDirectory && !artworkDirectory.mkdirs()) return null
         val file = File(artworkDirectory, "$key.jpg")
-        if (file.isFile && file.length() > 0) {
-            file.setLastModified(System.currentTimeMillis())
-            return file.absolutePath
-        }
-        if (artworkCacheBytes < 0) artworkCacheBytes = artworkDirectory.listFiles()?.sumOf { it.length() } ?: 0
+        cacheMutex.withLock { cachedArtwork(file, artworkState()) }?.let { return it }
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth > 32_768 || bounds.outHeight > 32_768) return null
@@ -389,21 +438,33 @@ class MusicRepository(context: Context) {
                     true,
                 )
             }
-            val atomic = AtomicFile(file)
-            val output = atomic.startWrite()
-            try {
+            val encoded = ByteArrayOutputStream().use { output ->
                 if (!scaled.compress(Bitmap.CompressFormat.JPEG, 86, output)) throw IOException("Artwork encoding failed")
-                atomic.finishWrite(output)
-            } catch (error: IOException) {
-                atomic.failWrite(output)
-                throw error
+                output.toByteArray()
             }
-            artworkCacheBytes += file.length()
-            // Prune during a long import as well, so a cancelled scan cannot leave an unbounded cache.
-            if (artworkCacheBytes > MAX_ARTWORK_CACHE_BYTES) {
-                pruneArtwork(emptySet(), MAX_ARTWORK_CACHE_BYTES * 3 / 4)
+            if (encoded.size > artworkCacheLimitBytes) return null
+            cacheMutex.withLock {
+                val state = artworkState()
+                cachedArtwork(file, state)?.let { return@withLock it }
+                if (!artworkDirectory.isDirectory && !artworkDirectory.mkdirs()) return@withLock null
+                val availableForExisting = artworkCacheLimitBytes - encoded.size
+                if (state.bytes < 0 || state.bytes > availableForExisting) {
+                    // Reserve room before writing. Referenced files are never eviction candidates:
+                    // when they consume the budget, this new cover simply stays uncached.
+                    if (!pruneArtwork(state, availableForExisting)) return@withLock null
+                }
+                val atomic = AtomicFile(file)
+                val output = atomic.startWrite()
+                try {
+                    output.write(encoded)
+                    atomic.finishWrite(output)
+                } catch (error: IOException) {
+                    atomic.failWrite(output)
+                    throw error
+                }
+                state.bytes += file.length()
+                cachedArtwork(file, state)
             }
-            file.absolutePath
         } catch (_: IOException) {
             null
         } finally {
@@ -422,16 +483,51 @@ class MusicRepository(context: Context) {
         }
     }
 
-    private fun pruneArtwork(referenced: Set<String>, targetBytes: Long = MAX_ARTWORK_CACHE_BYTES) {
-        val files = artworkDirectory.listFiles()?.filter { it.isFile } ?: return
+    /** All artwork state, including weak owner entries, is accessed while holding cacheMutex. */
+    private fun artworkState(): ArtworkState = artworkStates.getOrPut(artworkDirectory.canonicalPath) { ArtworkState() }
+
+    private fun refreshCommittedArtwork(state: ArtworkState, snapshot: LibrarySnapshot?) {
+        if (snapshot != null) {
+            state.committed = snapshot.tracks.mapNotNull { it.artworkPath }.toSet()
+        } else if (!library.baseFile.exists() && !File("${library.baseFile.path}.bak").exists()) {
+            state.committed = emptySet()
+        } else if (state.committed.isEmpty()) {
+            // If an existing snapshot is unreadable and no references are known in this process,
+            // fail closed: only a subsequent successful load/save may unprotect these files.
+            state.committed = artworkDirectory.listFiles()?.filter { it.isFile }?.map { it.canonicalPath }?.toSet().orEmpty()
+        }
+    }
+
+    private fun cachedArtwork(file: File, state: ArtworkState): String? {
+        if (!file.isFile || file.length() == 0L) return null
+        val path = file.canonicalPath
+        state.candidates.getOrPut(this@MusicRepository) { CandidateArtwork() }.paths.add(path)
+        file.setLastModified(System.currentTimeMillis())
+        return path
+    }
+
+    private fun pruneArtwork(state: ArtworkState, targetBytes: Long): Boolean {
+        val protected = state.committed + state.candidates.values.flatMap { it.paths }
+        val files = artworkDirectory.listFiles()?.filter { it.isFile }.orEmpty()
         var bytes = files.sumOf { it.length() }
-        files.sortedWith(compareBy<File> { it.absolutePath in referenced }.thenBy { it.lastModified() }).forEach { file ->
+        files.filter { it.canonicalPath !in protected }.sortedBy { it.lastModified() }.forEach { file ->
             if (bytes > targetBytes) {
                 val length = file.length()
                 if (file.delete()) bytes -= length
             }
         }
-        artworkCacheBytes = bytes
+        state.bytes = bytes
+        return bytes <= targetBytes
+    }
+
+    private data class LibrarySnapshot(val tracks: List<Track>, val sourceTreeUri: Uri?)
+
+    private class CandidateArtwork(val paths: MutableSet<String> = mutableSetOf(), var complete: Boolean = false)
+
+    private class ArtworkState {
+        var committed: Set<String> = emptySet()
+        val candidates = WeakHashMap<MusicRepository, CandidateArtwork>()
+        var bytes = -1L
     }
 
     private data class Folder(val id: String, val name: String)
@@ -444,6 +540,7 @@ class MusicRepository(context: Context) {
         // Shared mutexes also protect against two repository instances during Activity recreation.
         private val cacheMutex = Mutex()
         private val scanMutex = Mutex()
+        private val artworkStates = mutableMapOf<String, ArtworkState>()
         private const val MAX_TRACKS = 20_000
         private const val MAX_FOLDERS = 2_000
         private const val MAX_ENTRIES = 100_000
