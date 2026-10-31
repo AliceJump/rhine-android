@@ -10,83 +10,32 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.positionChanged
 import kotlin.math.abs
+import kotlin.math.ln
 
-/** A gesture has one owner: a two-finger gesture can never finish as a tap or album swipe. */
-internal suspend fun PointerInputScope.detectArchiveNavigation(
+/** One gesture keeps its owner even while the same cases move into another arrangement. */
+internal suspend fun PointerInputScope.detectShelfNavigation(
+    acceptStart: (Offset) -> Boolean,
+    expansion: () -> Float,
     dragThreshold: Float,
     onTap: (Offset) -> Unit,
     onDrag: (Float) -> Unit,
     onSwipe: (Int) -> Unit,
-    onPanorama: () -> Unit,
-) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        var multiplePointers = false
-        var dragging = false
-        var cancelled = down.isConsumed
-        var zoom = 1f
-        var distance = Offset.Zero
-        var furthest = 0f
-        var lastPoint = down.position
-        try {
-            while (!cancelled) {
-                val event = awaitPointerEvent()
-                if (!dragging && !multiplePointers && event.changes.any { it.isConsumed }) {
-                    cancelled = true
-                    break
-                }
-                if (event.changes.count { it.pressed } >= 2) {
-                    multiplePointers = true
-                    dragging = false
-                    onDrag(0f)
-                    zoom *= event.calculateZoom()
-                    event.changes.forEach { it.consume() }
-                    if (zoom <= .82f) {
-                        onPanorama()
-                        break
-                    }
-                } else if (multiplePointers) {
-                    event.changes.forEach { it.consume() }
-                } else {
-                    event.changes.firstOrNull { it.id == down.id }?.let { change ->
-                        lastPoint = change.position
-                        distance = change.position - down.position
-                        furthest = maxOf(furthest, distance.getDistance())
-                        if (!dragging && abs(distance.x) > viewConfiguration.touchSlop && abs(distance.x) > abs(distance.y)) {
-                            dragging = true
-                        } else if (!dragging && abs(distance.y) > viewConfiguration.touchSlop) {
-                            // Leave vertical scrolling to the portrait page containing the shelf.
-                            cancelled = true
-                        }
-                        if (dragging) {
-                            onDrag(distance.x)
-                            change.consume()
-                        }
-                    }
-                }
-                if (event.changes.none { it.pressed }) break
-            }
-            if (!cancelled && !multiplePointers) {
-                if (dragging && abs(distance.x) >= dragThreshold) onSwipe(if (distance.x < 0f) 1 else -1)
-                else if (!dragging && furthest <= viewConfiguration.touchSlop) onTap(lastPoint)
-            }
-        } finally {
-            onDrag(0f)
-        }
-    }
-}
-
-internal suspend fun PointerInputScope.detectPanoramaNavigation(
-    acceptStart: (Offset) -> Boolean,
-    onTap: (Offset) -> Unit,
-    onStart: () -> Unit,
-    onTransform: (centroid: Offset, pan: Offset, zoom: Float) -> Unit,
-    onEnd: () -> Unit,
+    onNormalScroll: (Float) -> Unit,
+    onExpansion: (Float) -> Unit,
+    onExpansionEnd: (Boolean) -> Unit,
+    onPanoramaStart: () -> Unit,
+    onPanoramaTransform: (centroid: Offset, pan: Offset, zoom: Float) -> Unit,
+    onPanoramaEnd: () -> Unit,
 ) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         if (!acceptStart(down.position)) return@awaitEachGesture
+        val startedExpanded = expansion() >= .999f
+        var progress = expansion()
         var multiplePointers = false
+        var expanding = false
+        var horizontal = false
+        var vertical = false
         var transforming = false
         var cancelled = down.isConsumed
         var totalPan = Offset.Zero
@@ -96,35 +45,62 @@ internal suspend fun PointerInputScope.detectPanoramaNavigation(
         try {
             while (!cancelled) {
                 val event = awaitPointerEvent()
-                if (!transforming && event.changes.any { it.isConsumed }) {
+                if (!horizontal && !vertical && !expanding && !transforming && event.changes.any { it.isConsumed }) {
                     cancelled = true
                     break
                 }
-                multiplePointers = multiplePointers || event.changes.count { it.pressed } >= 2
-                val zoom = event.calculateZoom()
+                val multi = event.changes.count { it.pressed } >= 2
+                multiplePointers = multiplePointers || multi
                 val pan = event.calculatePan()
-                totalZoom *= zoom
+                val zoom = event.calculateZoom().takeIf { it.isFinite() && it > 0f } ?: 1f
                 totalPan += pan
+                totalZoom *= zoom
                 furthest = maxOf(furthest, totalPan.getDistance())
                 event.changes.firstOrNull { it.id == down.id }?.let { lastPoint = it.position }
-                if (!transforming) {
-                    val zoomMotion = abs(1f - totalZoom) * event.calculateCentroidSize(useCurrent = false)
-                    if (zoomMotion > viewConfiguration.touchSlop || totalPan.getDistance() > viewConfiguration.touchSlop) {
-                        transforming = true
-                        onStart()
+                if (!startedExpanded) {
+                    if (multi) {
+                        expanding = true
+                        horizontal = false
+                        vertical = false
+                        onDrag(0f)
+                        progress = (progress - ln(zoom) / .65f).coerceIn(0f, 1f)
+                        onExpansion(progress)
+                        event.changes.forEach { it.consume() }
+                    } else if (multiplePointers) {
+                        // The remaining finger still belongs to the pinch; never select on lift.
+                        event.changes.forEach { it.consume() }
+                    } else {
+                        if (!horizontal && !vertical && totalPan.getDistance() > viewConfiguration.touchSlop) {
+                            horizontal = abs(totalPan.x) > abs(totalPan.y)
+                            vertical = !horizontal
+                        }
+                        if (horizontal) onDrag(totalPan.x.coerceIn(-4f * dragThreshold, 4f * dragThreshold))
+                        if (vertical) onNormalScroll(-pan.y)
+                        if (horizontal || vertical) event.changes.forEach { it.consume() }
                     }
-                }
-                if (transforming) {
-                    if (zoom != 1f || pan != Offset.Zero) {
-                        onTransform(event.calculateCentroid(useCurrent = true), pan, zoom)
+                } else {
+                    if (!transforming) {
+                        val zoomMotion = abs(1f - totalZoom) * event.calculateCentroidSize(useCurrent = false)
+                        if (zoomMotion > viewConfiguration.touchSlop || totalPan.getDistance() > viewConfiguration.touchSlop) {
+                            transforming = true
+                            onPanoramaStart()
+                        }
                     }
-                    event.changes.filter { it.positionChanged() }.forEach { it.consume() }
+                    if (transforming) {
+                        if (zoom != 1f || pan != Offset.Zero) onPanoramaTransform(event.calculateCentroid(), pan, zoom)
+                        event.changes.filter { it.positionChanged() }.forEach { it.consume() }
+                    }
                 }
                 if (event.changes.none { it.pressed }) break
             }
-            if (!cancelled && !transforming && !multiplePointers && furthest <= viewConfiguration.touchSlop) onTap(lastPoint)
+            if (!cancelled && !multiplePointers && !transforming && !vertical) {
+                if (horizontal && abs(totalPan.x) >= dragThreshold) onSwipe(if (totalPan.x < 0f) 1 else -1)
+                else if (!horizontal && furthest <= viewConfiguration.touchSlop) onTap(lastPoint)
+            }
         } finally {
-            if (transforming) onEnd()
+            onDrag(0f)
+            if (expanding) onExpansionEnd(progress >= .35f)
+            if (transforming) onPanoramaEnd()
         }
     }
 }

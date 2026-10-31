@@ -25,16 +25,24 @@ visual material stays faithful to the reference.
 | Bottom right | 369.09 | 448.34 |
 | Bottom left | 148.60 | 345.74 |
 
-`ArchiveShelf.kt` loads that quadrilateral from the metadata, centre-crops each user
+`ShelfPainter.kt` loads that quadrilateral from the metadata, centre-crops each user
 cover, and maps it through Android's `Matrix.setPolyToPoly`. The transparent case is
 drawn above the cover. Nearby albums recede along a diagonal, selection lifts the active
-case, and a spring transition moves between albums. Horizontal swipes, taps, visible
+case, and separate spring transitions move the selected case and the row. Horizontal swipes, taps, visible
 previous/next buttons, and accessibility actions all update the same selected album.
 
 The native panorama mode reuses this sprite and cover mapping in a responsive multi-row
-collection. It adds touch zoom/pan, animated focus, and an action card above the selected
-case. The layout reflows with the available window size; these Android interactions do
-not import or claim to reproduce additional upstream inspection frames.
+collection. One persistent canvas and one pose per album connect both arrangements:
+each case moves and changes size during expansion and collapse, including an interrupted
+or reversed transition. Pinching drives expansion directly. The ordinary header and
+inspector remain measured, so hiding them does not change the target grid columns mid-motion.
+Touch zoom/pan, animated focus, and the action card operate on these same album identities.
+
+The close-shelf motion takes its lift, neighbouring-case wave, and asymmetric spacing cues
+from `theme/js/archive.js` (`caseTargets` and `archiveUpdate`) and the critically damped
+motion in `theme/js/lib/motion.js` at the source commit above. The Android amplitudes are
+adapted to the available touch viewport; the case's lift responds before the slower row.
+These interactions do not import or claim to reproduce additional upstream inspection frames.
 
 The included metadata also describes upstream hero/inspection renders. Those image
 sequences are not bundled in this first Android implementation; the code reads only

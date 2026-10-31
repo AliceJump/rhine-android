@@ -117,10 +117,11 @@ jobs:
             ./gradlew --no-daemon -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true :app:connectedDebugAndroidTest || smoke_status=$?;
             mkdir -p emulator-artifacts;
             adb pull /sdcard/Android/data/io.github.alicejump.rhine/files/screenshots emulator-artifacts/screenshots || smoke_status=1;
+            adb pull /sdcard/Android/data/io.github.alicejump.rhine/files/recordings emulator-artifacts/recordings || smoke_status=1;
             adb logcat -d -v threadtime > emulator-artifacts/logcat.txt;
             exit "$smoke_status"
 
-      - name: Upload screenshots and instrumentation reports
+      - name: Upload screenshots, motion recordings and instrumentation reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

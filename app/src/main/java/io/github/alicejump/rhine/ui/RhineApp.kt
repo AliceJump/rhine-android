@@ -4,6 +4,10 @@ package io.github.alicejump.rhine.ui
 
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -26,15 +30,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -92,6 +101,7 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
     var view by rememberSaveable { mutableStateOf(View.Archive) }
     var demoSelection by rememberSaveable { mutableStateOf(DemoAlbums.first().id) }
     var panorama by rememberSaveable { mutableStateOf(false) }
+    var gestureExpansion by remember { mutableStateOf<Float?>(null) }
     var showAlbum by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     val library = model.albums.ifEmpty { DemoAlbums }
@@ -102,36 +112,40 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
     val configuration = LocalConfiguration.current
     val compactLandscape = configuration.screenWidthDp >= 600 && configuration.screenHeightDp < 500
     val activePanorama = panorama && view == View.Archive
-    val openPlayer = { panorama = false; view = View.Playing }
+    val expansion by animateFloatAsState(
+        targetValue = gestureExpansion ?: if (activePanorama) 1f else 0f,
+        animationSpec = if (gestureExpansion != null) snap() else tween(620, easing = FastOutSlowInEasing),
+        label = "archive-expansion",
+    )
+    val changePanorama: (Boolean) -> Unit = { gestureExpansion = null; panorama = it }
+    val openPlayer = { gestureExpansion = null; panorama = false; view = View.Playing }
 
-    BackHandler(enabled = activePanorama && !showAlbum) { panorama = false }
+    BackHandler(enabled = (activePanorama || expansion > .001f) && !showAlbum) { changePanorama(false) }
 
     Scaffold(
         containerColor = colors.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
-            Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars).background(colors.background)) {
-                if (activePanorama) {
-                    MiniPlayer(model, onOpen = openPlayer, compact = true)
-                } else if (compactLandscape) {
-                    HorizontalDivider(color = colors.outline.copy(alpha = .3f))
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            MiniPlayer(model, onOpen = openPlayer, compact = true)
+            if (view != View.Archive) {
+                Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars).background(colors.background)) {
+                    if (compactLandscape) {
+                        HorizontalDivider(color = colors.outline.copy(alpha = .3f))
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) { MiniPlayer(model, onOpen = openPlayer, compact = true) }
+                            VerticalDivider(Modifier.height(40.dp), color = colors.outline.copy(alpha = .25f))
+                            NavigationTabs(view, { view = it }, Modifier.weight(1f), compact = true)
                         }
-                        VerticalDivider(Modifier.height(40.dp), color = colors.outline.copy(alpha = .25f))
-                        NavigationTabs(view, { view = it }, Modifier.weight(1f), compact = true)
+                    } else {
+                        MiniPlayer(model, onOpen = openPlayer)
+                        HorizontalDivider(color = colors.outline.copy(alpha = .25f))
+                        NavigationTabs(view, { view = it })
                     }
-                } else {
-                    MiniPlayer(model, onOpen = openPlayer)
-                    HorizontalDivider(color = colors.outline.copy(alpha = .25f))
-                    NavigationTabs(view, { view = it })
                 }
             }
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            if (!activePanorama) Header(onChooseFolder, canImport = canImport, compact = compactLandscape)
+            if (view != View.Archive) Header(onChooseFolder, canImport = canImport, compact = compactLandscape)
             if (model.scanning) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -159,8 +173,13 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
                         canImport = canImport,
                         compact = compactLandscape,
                         panorama = activePanorama,
-                        onPanoramaChange = { panorama = it },
+                        expansion = expansion,
+                        onPanoramaChange = changePanorama,
+                        onExpansionGesture = { gestureExpansion = it },
                         canPlay = realLibrary && model.playback.connected,
+                        onChooseFolder = onChooseFolder,
+                        onNavigate = { if (expansion < .001f) view = it },
+                        miniPlayer = { MiniPlayer(model, onOpen = openPlayer, compact = compactLandscape, expansion = expansion) },
                     )
                     View.Tracks -> TrackPage(model.tracks, model.playback.trackId, model::playTrack, onChooseFolder, canImport)
                     View.Playing -> PlayingPage(model, onChooseFolder, canImport)
@@ -243,42 +262,106 @@ private fun Header(onChooseFolder: () -> Unit, canImport: Boolean, compact: Bool
 private fun ArchivePage(
     albums: List<Album>, selected: Album, demo: Boolean, onSelect: (Album) -> Unit,
     onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean, compact: Boolean,
-    panorama: Boolean, onPanoramaChange: (Boolean) -> Unit, canPlay: Boolean,
+    panorama: Boolean, expansion: Float, onPanoramaChange: (Boolean) -> Unit,
+    onExpansionGesture: (Float?) -> Unit, canPlay: Boolean,
+    onChooseFolder: () -> Unit, onNavigate: (View) -> Unit, miniPlayer: @Composable () -> Unit,
 ) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    var hostCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var slotCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var contentCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var normalScene by remember { mutableStateOf<PanoramaRect?>(null) }
+    var normalClip by remember { mutableStateOf<PanoramaRect?>(null) }
+    val portraitScroll = rememberScrollState()
+    val selectedIndex = albums.indexOfFirst { it.id == selected.id }.coerceAtLeast(0)
+    fun selectRelative(delta: Int) {
+        albums.getOrNull(selectedIndex + delta)?.let(onSelect)
+    }
+    fun updateSceneBounds() {
+        val host = hostCoordinates
+        val coordinates = slotCoordinates
+        if (host != null && coordinates != null && host.isAttached && coordinates.isAttached) {
+            val bounds = host.localBoundingBoxOf(coordinates, clipBounds = false)
+            normalScene = PanoramaRect(bounds.left, bounds.top, bounds.right, bounds.bottom)
+        }
+        val content = contentCoordinates
+        if (host != null && content != null && host.isAttached && content.isAttached) {
+            val bounds = host.localBoundingBoxOf(content, clipBounds = false)
+            normalClip = PanoramaRect(bounds.left, bounds.top, bounds.right, bounds.bottom)
+        }
+    }
+    val sceneSlot = Modifier.fillMaxWidth().onGloballyPositioned { slotCoordinates = it; updateSceneBounds() }
+    BoxWithConstraints(Modifier.fillMaxSize().onGloballyPositioned { hostCoordinates = it; updateSceneBounds() }) {
         val wide = maxWidth >= 720.dp
-        if (panorama) {
+        // This ordinary layout stays measured throughout the transition. Only its chrome
+        // fades; the one canvas below owns every album in both arrangements.
+        Column(Modifier.fillMaxSize().graphicsLayer { alpha = 1f - expansion }
+            .then(if (expansion >= .999f) Modifier.clearAndSetSemantics { } else Modifier)) {
+            Header(onChooseFolder, canImport = canImport && expansion < .001f, compact = compact)
+            Box(Modifier.weight(1f).onGloballyPositioned { contentCoordinates = it; updateSceneBounds() }) {
+                if (wide) {
+                    Row(Modifier.fillMaxSize()) {
+                        Column(Modifier.weight(1.5f).fillMaxHeight()) {
+                            ShelfLabel(demo, albums.size, compact, onPanorama = { onPanoramaChange(true) })
+                            Spacer(sceneSlot.weight(1f))
+                            ArchiveShelfControls(albums.size, selectedIndex, ::selectRelative)
+                        }
+                        Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())
+                            .padding(if (compact) 16.dp else 24.dp)) {
+                            AlbumFile(selected, selectedIndex, demo, onPlay, onOpen, canImport, compact)
+                        }
+                    }
+                } else {
+                    Column(Modifier.fillMaxSize().verticalScroll(portraitScroll, enabled = expansion < .001f)) {
+                        ShelfLabel(demo, albums.size, onPanorama = { onPanoramaChange(true) })
+                        Column(Modifier.fillMaxWidth().height(330.dp)) {
+                            Spacer(sceneSlot.weight(1f))
+                            ArchiveShelfControls(albums.size, selectedIndex, ::selectRelative)
+                        }
+                        Column(Modifier.padding(horizontal = 24.dp)) {
+                            AlbumFile(selected, selectedIndex, demo, onPlay, onOpen, canImport)
+                            Spacer(Modifier.height(28.dp))
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(if (compact) 56.dp else 66.dp))
+            if (!compact) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .25f))
+                NavigationTabs(View.Archive, onNavigate)
+            }
+        }
+        normalScene?.let { viewport ->
             ArchiveShelf(
-                albums, selected.id, onSelect, Modifier.fillMaxSize(),
-                panorama = true, onPanoramaChange = onPanoramaChange,
+                albums = albums, selectedAlbumId = selected.id, onSelect = onSelect,
+                modifier = Modifier.fillMaxWidth().height((maxHeight - 56.dp).coerceAtLeast(1.dp)),
+                panorama = panorama, expansion = expansion,
+                normalScene = viewport, normalClip = normalClip ?: viewport, onPanoramaChange = onPanoramaChange,
+                onExpansionGesture = onExpansionGesture,
+                onNormalScroll = { portraitScroll.dispatchRawDelta(it) },
                 onPlay = onPlay, onOpen = onOpen, canPlay = canPlay,
             )
-        } else if (wide) {
-            Row(Modifier.fillMaxSize()) {
-                Column(Modifier.weight(1.5f).fillMaxHeight()) {
-                    ShelfLabel(demo, albums.size, compact, onPanorama = { onPanoramaChange(true) })
-                    ArchiveShelf(
-                        albums, selected.id, onSelect, Modifier.fillMaxWidth().weight(1f),
-                        onPanoramaChange = onPanoramaChange,
-                    )
-                }
-                Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(if (compact) 16.dp else 24.dp)) {
-                    AlbumFile(selected, albums.indexOf(selected), demo, onPlay, onOpen, canImport, compact)
+        }
+        if (compact) {
+            val navigationWidth = maxWidth / 2
+            Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(56.dp)
+                .background(MaterialTheme.colorScheme.background), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { miniPlayer() }
+                Box(Modifier.width(navigationWidth * (1f - expansion)).clipToBounds()
+                    .graphicsLayer { alpha = 1f - expansion }
+                    .then(if (expansion >= .999f) Modifier.clearAndSetSemantics { } else Modifier)) {
+                    NavigationTabs(View.Archive, onNavigate, Modifier.requiredWidth(navigationWidth), compact = true)
                 }
             }
         } else {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                ShelfLabel(demo, albums.size, onPanorama = { onPanoramaChange(true) })
-                ArchiveShelf(
-                    albums, selected.id, onSelect, Modifier.fillMaxWidth().height(330.dp),
-                    onPanoramaChange = onPanoramaChange,
-                )
-                Column(Modifier.padding(horizontal = 24.dp)) {
-                    AlbumFile(selected, albums.indexOf(selected), demo, onPlay, onOpen, canImport)
-                    Spacer(Modifier.height(28.dp))
-                }
-            }
+            // The player travels down into the collapsing navigation space. Both shelf
+            // endpoints stay measured against this fixed host throughout the movement.
+            val playerHeight = (66f - 10f * expansion).dp
+            val navigationHeight = 63.dp
+            val top = maxHeight - playerHeight - navigationHeight * (1f - expansion)
+            Box(Modifier.offset(y = top).fillMaxWidth().height(playerHeight)
+                .background(MaterialTheme.colorScheme.background)) { miniPlayer() }
         }
+
     }
 }
 
@@ -389,11 +472,11 @@ private fun TrackRow(track: Track, index: Int, playing: Boolean, onClick: () -> 
 }
 
 @Composable
-private fun MiniPlayer(model: RhineViewModel, onOpen: () -> Unit, compact: Boolean = false) {
+private fun MiniPlayer(model: RhineViewModel, onOpen: () -> Unit, compact: Boolean = false, expansion: Float = 0f) {
     val state = model.playback
     val colors = MaterialTheme.colorScheme
     if (!compact) HorizontalDivider(color = colors.outline.copy(alpha = .3f))
-    Row(Modifier.fillMaxWidth().height(if (compact) 56.dp else 66.dp).padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(if (compact) 56.dp else (66f - 10f * expansion).dp).padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(32.dp).border(1.dp, colors.outline.copy(alpha = .4f)).clickable(onClick = onOpen), contentAlignment = Alignment.Center) {
             Text("∞", color = if (state.playing) colors.primary else colors.onSurfaceVariant, fontSize = 25.sp)
         }

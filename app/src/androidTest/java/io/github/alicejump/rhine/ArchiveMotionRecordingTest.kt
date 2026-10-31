@@ -1,0 +1,208 @@
+package io.github.alicejump.rhine
+
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
+import android.media.MediaMetadataRetriever
+import android.os.ParcelFileDescriptor
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.io.BufferedReader
+import java.io.Closeable
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+
+/** No Compose test clock: screenrecord must see the application's real-time animation. */
+@RunWith(AndroidJUnit4::class)
+class ArchiveMotionRecordingTest {
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val automation get() = instrumentation.uiAutomation
+
+    @Test
+    fun recordPhoneAndTabletMotion() {
+        MotionTestDevice.withAnimations {
+            recordDevice(tablet = false)
+            recordDevice(tablet = true)
+        }
+    }
+
+    private fun recordDevice(tablet: Boolean) {
+        val originalSize = Regex("Override size: ([0-9]+x[0-9]+)").find(MotionTestDevice.shell("wm size"))?.groupValues?.get(1)
+        val originalDensity = Regex("Override density: ([0-9]+)").find(MotionTestDevice.shell("wm density"))?.groupValues?.get(1)
+        try {
+            if (tablet) {
+                MotionTestDevice.shell("wm size 1600x2560")
+                MotionTestDevice.shell("wm density 320")
+            }
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val orientation = if (tablet) ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                val expected = if (tablet) Configuration.ORIENTATION_LANDSCAPE else Configuration.ORIENTATION_PORTRAIT
+                scenario.onActivity { it.requestedOrientation = orientation }
+                MotionTestDevice.await("The recording window must reach its requested orientation") {
+                    var ready = false
+                    scenario.onActivity {
+                        ready = it.resources.configuration.orientation == expected &&
+                            (if (tablet) it.window.decorView.width > it.window.decorView.height else it.window.decorView.height > it.window.decorView.width)
+                    }
+                    ready
+                }
+                awaitAction("全景浏览")
+                val label = if (tablet) "tablet-landscape-motion" else "phone-portrait-motion"
+                val size = if (tablet) "1280x800" else "720x1280"
+                ScreenRecording.start(label, size).use {
+                    MotionTestDevice.awaitFrames(24)
+                    click("下一张专辑")
+                    MotionTestDevice.awaitFrames(48)
+                    click("下一张专辑")
+                    MotionTestDevice.awaitFrames(48)
+                    click("上一张专辑")
+                    MotionTestDevice.awaitFrames(48)
+
+                    click("全景浏览")
+                    MotionTestDevice.awaitFrames(8)
+                    click("退出全景") // Deliberately reverse an in-flight expansion.
+                    MotionTestDevice.awaitFrames(48)
+                    click("全景浏览")
+                    MotionTestDevice.awaitFrames(54)
+                    click("SOFT MACHINES")
+                    MotionTestDevice.awaitFrames(54)
+                    awaitAction("全景专辑详情")
+                    click("退出全景")
+                    MotionTestDevice.awaitFrames(54)
+                    awaitAction("全景浏览")
+                    click("下一张专辑")
+                    MotionTestDevice.awaitFrames(54)
+                }
+                scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+            }
+        } finally {
+            if (tablet) {
+                MotionTestDevice.shell("wm size ${originalSize ?: "reset"}")
+                MotionTestDevice.shell("wm density ${originalDensity ?: "reset"}")
+            }
+        }
+    }
+
+    private fun awaitAction(label: String) {
+        MotionTestDevice.await("Visible action '$label' was not available during motion recording") {
+            val node = action(label)
+            (node != null).also { node?.recycle() }
+        }
+    }
+
+    private fun click(label: String) {
+        awaitAction(label)
+        val node = checkNotNull(action(label)) { "Action '$label' disappeared before it could be used" }
+        try {
+            assertTrue("The application must accept action '$label'", node.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+        } finally {
+            node.recycle()
+        }
+    }
+
+    private fun action(label: String): AccessibilityNodeInfo? = find(automation.rootInActiveWindow) { node ->
+        node.isVisibleToUser && node.isEnabled && node.isClickable &&
+            (node.contentDescription?.toString()?.contains(label) == true || node.text?.toString() == label)
+    }
+
+    private fun find(node: AccessibilityNodeInfo?, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
+        if (node == null) return null
+        var keep = false
+        try {
+            if (predicate(node)) {
+                keep = true
+                return node
+            }
+            for (index in 0 until node.childCount) {
+                find(node.getChild(index), predicate)?.let { return it }
+            }
+            return null
+        } finally {
+            if (!keep) node.recycle()
+        }
+    }
+}
+
+/** Runs only this test's bounded screenrecord process and finalizes its MP4 with SIGINT. */
+private class ScreenRecording(
+    private val file: File,
+    private val script: File,
+    private val pid: Int,
+    private val reader: BufferedReader,
+    private val executor: ExecutorService,
+    private val output: Future<String>,
+) : Closeable {
+    override fun close() {
+        try {
+            if (!output.isDone) {
+                // Do not signal a recycled PID or someone else's recorder.
+                val arguments = MotionTestDevice.shell("cat /proc/$pid/cmdline").split('\u0000')
+                if (file.absolutePath in arguments && arguments.firstOrNull()?.endsWith("screenrecord") == true) {
+                    MotionTestDevice.shell("kill -2 $pid")
+                }
+            }
+            File(file.parentFile, "${file.nameWithoutExtension}.log").writeText(output.get(10, TimeUnit.SECONDS))
+        } finally {
+            reader.close()
+            executor.shutdownNow()
+            script.delete()
+        }
+        check(file.isFile && file.length() > 1_024) { "The screen recorder did not produce a video: ${file.name}" }
+        val metadata = MediaMetadataRetriever()
+        try {
+            metadata.setDataSource(file.absolutePath)
+            val duration = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+            check(duration > 2_000) { "The recording is missing its motion sequence: ${file.name}" }
+            check(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes") { "The recording has no video stream" }
+        } finally {
+            metadata.release()
+        }
+    }
+
+    companion object {
+        fun start(name: String, size: String): ScreenRecording {
+            require(name.matches(Regex("[a-z-]+")) && size.matches(Regex("[0-9]+x[0-9]+")))
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            val context = instrumentation.targetContext
+            val directory = File(checkNotNull(context.getExternalFilesDir(null)), "recordings")
+            check(directory.isDirectory || directory.mkdirs())
+            val file = File(directory, "$name.mp4")
+            check(!file.exists() || file.delete()) { "A previous recording could not be replaced" }
+            val script = File(checkNotNull(context.externalCacheDir), "$name.sh")
+            check(file.absolutePath.matches(Regex("[A-Za-z0-9_./-]+")))
+            script.writeText("echo ${'$'}${'$'}\nexec screenrecord --size $size --bit-rate 4000000 --time-limit 45 ${file.absolutePath} 2>&1\n")
+            val reader = ParcelFileDescriptor.AutoCloseInputStream(
+                instrumentation.uiAutomation.executeShellCommand("sh ${script.absolutePath}"),
+            ).bufferedReader()
+            val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "motion-recording-output").apply { isDaemon = true } }
+            try {
+                val pid = executor.submit<String> { checkNotNull(reader.readLine()) }.get(5, TimeUnit.SECONDS).trim().toInt()
+                check(pid > 1)
+                val output = executor.submit<String> { reader.readText() }
+                val recording = ScreenRecording(file, script, pid, reader, executor, output)
+                try {
+                    MotionTestDevice.await("The screen recorder did not start") {
+                        check(!output.isDone) { "The screen recorder exited before recording the scene: ${output.get()}" }
+                        file.length() > 0
+                    }
+                    return recording
+                } catch (error: Throwable) {
+                    runCatching { recording.close() }.exceptionOrNull()?.let(error::addSuppressed)
+                    throw error
+                }
+            } catch (error: Throwable) {
+                reader.close()
+                executor.shutdownNow()
+                script.delete()
+                throw error
+            }
+        }
+    }
+}
