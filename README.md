@@ -1,5 +1,71 @@
 # Rhine Android
 
-面向 Android 的本地音乐播放器，参考 RhinE / Audio Archive 的档案式视觉设计。
+将 RhinE / Audio Archive 的唱片档案界面带到 Android 的独立本地音乐播放器。
 
-应用代码通过功能分支与 Pull Request 开发；本提交只初始化仓库。
+界面以米白色、黑色和橙色组成，使用唱片盒浏览专辑。播放由 Android Media3 负责，应用不需要电脑端 foobar2000。
+
+本项目处于首个可安装版本开发阶段。具体实现与验证结果以当前 PR 和对应 GitHub Actions 为准。
+
+## 使用
+
+要求 Android 8.0（API 26）或更高版本。
+
+1. 安装调试 APK，启动 Rhine Android。
+2. 通过应用中的目录选择入口，授权一个存放音乐的文件夹。
+3. 等待扫描后，在唱片架选择专辑，再选择曲目播放。
+
+目录授权使用 Android 系统文件选择器。目录被移动、存储设备断开或授权失效时，需要重新选择。
+
+应用的曲库索引和外观设置仅保存在当前设备，已配置为不参与 Android 云备份或设备间数据迁移。换机或卸载后重新安装，需要重新授权音乐目录。平台配置与媒体服务访问控制说明见 [docs/ANDROID_PLATFORM.md](docs/ANDROID_PLATFORM.md)。
+
+没有导入音乐时，界面预览只用于展示布局和交互，不代表存在可播放的歌曲。
+
+## 构建
+
+需要 JDK 17 和 Android SDK 36；Android Studio 可直接打开项目。
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+Windows：
+
+```powershell
+.\gradlew.bat :app:assembleDebug
+```
+
+APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`。首次构建需要访问 Google Maven、Maven Central 和 Gradle 分发服务。
+
+验证：
+
+```bash
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+构建版本固定为 AGP 8.13.2、Gradle 8.13、Kotlin 2.2.21、Compose BOM 2025.08.00 和 Media3 1.8.0。Gradle wrapper 与分发包均有 SHA-256 校验。
+
+## 下载 CI 产物
+
+进入仓库的 **Actions → Android**，选择对应提交且成功完成的运行。在 **Artifacts** 中下载 `rhine-android-debug-<提交 SHA>`，解压后得到 APK 和校验文件。
+
+CI 会运行编译、单元测试和 Android Lint。调试包只用于开发与试用；尚未建立正式发行签名与应用商店发布流程。不同构建环境的调试签名可能不同，安装更新前应确认签名一致。
+
+另一个 CI job 使用 Android 15（API 35）模拟器验证空曲库预览、页面切换、明暗模式与横屏布局，并通过真实 MediaSessionService 检查 PCM 播放、暂停、跳转和后台播放。SAF 测试还会验证真实音频扫描、坏文件跳过、快照恢复，以及取消或目录访问失败后保留原曲库。封面回归测试使用真实图片和小容量缓存，检查缓存压力、扫描取消与多个 repository 的未提交结果保护。界面截图与 instrumentation 报告在 `android-smoke-<提交 SHA>` 产物中。
+
+测试音频是本项目合成的 12 秒低音量正弦波，只放在 `src/debug/res/raw`，不会进入 release 包。它不参与用户曲库，也不会由应用自动播放。
+
+## 实现范围
+
+首版围绕本地文件夹导入、专辑展示、播放控制和后台媒体会话构建。Windows 上的 JSplitter、foobar2000 组件、安装脚本不在 Android 中运行。
+
+封面缓存有容量限制；空间被当前馆藏与待提交扫描占满时，新增封面显示占位图，音频仍可播放。取消或失败的扫描会保留原曲库正在使用的封面。
+
+首版使用原 MARBLE 盒体素材和原生滑动、选中动画。完整的 60 帧抽出旋转、同步歌词、音频频谱、第三方音乐服务、DSP 和全部外观组合尚未实现。实际可解码格式取决于 Android 设备与 Media3 的解码支持。
+
+## 来源
+
+视觉与素材来源：**[RhinE — An Audio Archive](https://github.com/ericzhang12111-cell/RhinE)**。
+
+本项目是独立的 Android 实现，不是 foobar2000 的官方 Android 版本，也不包含 foobar2000 可执行程序。引用代码与素材的版本、许可和署名见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 [docs/UPSTREAM.md](docs/UPSTREAM.md)。
+
+Gradle wrapper 来源于 [Gradle v8.13.0](https://github.com/gradle/gradle/tree/v8.13.0)，保留原 Apache-2.0 许可声明。
