@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -159,6 +160,8 @@ internal fun PanoramaShelf(
                 .sortedBy { if (it.index == focusedIndex) 1 else 0 }
         }
         val currentPlacements by rememberUpdatedState(placements)
+        fun inVisibleScene(point: Offset): Boolean =
+            point.x in 0f..width && point.y in layout.viewport.top..layout.viewport.bottom
         val paths = remember(albums, visibleIndices) {
             visibleIndices.mapNotNull { albums[it].artworkPath }.distinct()
         }
@@ -202,9 +205,12 @@ internal fun PanoramaShelf(
                 }
                 .pointerInput(layout, albums) {
                     detectPanoramaNavigation(
+                        acceptStart = ::inVisibleScene,
                         onTap = { point ->
-                            currentPlacements.asReversed().firstOrNull { it.contains(point.x, point.y) }
-                                ?.let { focus(albums[it.index]) }
+                            if (inVisibleScene(point)) {
+                                currentPlacements.asReversed().firstOrNull { it.contains(point.x, point.y) }
+                                    ?.let { focus(albums[it.index]) }
+                            }
                         },
                         onStart = {
                             targetCamera = currentCamera

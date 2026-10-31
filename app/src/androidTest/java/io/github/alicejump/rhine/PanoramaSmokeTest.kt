@@ -59,7 +59,8 @@ class PanoramaSmokeTest {
             compose.onNodeWithText("打开档案").assertDoesNotExist()
             compose.onNodeWithText("01  档案").assertDoesNotExist()
             compose.onNodeWithTag("panorama-actions").assertDoesNotExist()
-            SmokeScreenshots.capture("06-panorama-phone-overview").recycle()
+            assertToolbarDoesNotSelectAnOccludedAlbum()
+            SmokeScreenshots.capture("06-panorama-phone-overview", compose.activity).recycle()
 
             touchAlbum("demo-1")
             awaitTag("panorama-actions")
@@ -67,11 +68,11 @@ class PanoramaSmokeTest {
             compose.onNodeWithContentDescription("播放选中专辑").assertIsNotEnabled()
             compose.onNodeWithText("尚未播放").assertIsDisplayed()
             assertCardInsideScene()
-            SmokeScreenshots.capture("07-panorama-phone-focus").recycle()
+            SmokeScreenshots.capture("07-panorama-phone-focus", compose.activity).recycle()
 
             compose.onNodeWithContentDescription("全景专辑详情").performClick()
             compose.onNodeWithText("ALBUM FILE / 曲目档案").assertIsDisplayed()
-            SmokeScreenshots.capture("08-panorama-phone-details").recycle()
+            SmokeScreenshots.capture("08-panorama-phone-details", compose.activity).recycle()
             pressBack()
             awaitTag("panorama-actions")
             compose.onNodeWithText("QUIET ORBIT").assertIsDisplayed()
@@ -111,7 +112,7 @@ class PanoramaSmokeTest {
             awaitTag("panorama-mode")
             val portraitColumns = visibleColumns()
             assertTrue("The tablet portrait view should expose several columns", portraitColumns >= 2)
-            SmokeScreenshots.capture("09-panorama-tablet-portrait").recycle()
+            SmokeScreenshots.capture("09-panorama-tablet-portrait", compose.activity).recycle()
 
             rotateTo(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
             awaitTag("panorama-mode")
@@ -120,21 +121,21 @@ class PanoramaSmokeTest {
                 "Landscape should display more albums across a row than portrait: $landscapeColumns versus $portraitColumns",
                 landscapeColumns > portraitColumns,
             )
-            SmokeScreenshots.capture("10-panorama-tablet-landscape").recycle()
+            SmokeScreenshots.capture("10-panorama-tablet-landscape", compose.activity).recycle()
 
             touchAlbum("demo-5")
             awaitTag("panorama-actions")
             compose.onNodeWithText("GLASS MEMORY").assertIsDisplayed()
             compose.onNodeWithContentDescription("播放选中专辑").assertIsNotEnabled()
             assertCardInsideScene()
-            SmokeScreenshots.capture("11-panorama-tablet-landscape-focus").recycle()
+            SmokeScreenshots.capture("11-panorama-tablet-landscape-focus", compose.activity).recycle()
 
             rotateTo(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
             awaitTag("panorama-actions")
             compose.onNodeWithText("GLASS MEMORY").assertIsDisplayed()
             compose.onNodeWithText("尚未播放").assertIsDisplayed()
             assertCardInsideScene()
-            SmokeScreenshots.capture("12-panorama-tablet-portrait-focus").recycle()
+            SmokeScreenshots.capture("12-panorama-tablet-portrait-focus", compose.activity).recycle()
 
             compose.onNodeWithContentDescription("退出全景").performClick()
             awaitTag("archive-shelf")
@@ -180,6 +181,32 @@ class PanoramaSmokeTest {
         compose.onNodeWithTag("panorama-album-$id", useUnmergedTree = true)
             .assertIsDisplayed()
             .performTouchInput { click(center) }
+        compose.waitForIdle()
+    }
+
+    private fun assertToolbarDoesNotSelectAnOccludedAlbum() {
+        val canvas = compose.onNodeWithTag("panorama-canvas")
+        val scene = canvas.fetchSemanticsNode().boundsInRoot
+        val album = compose.onNodeWithTag("panorama-album-demo-0", useUnmergedTree = true)
+            .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val heading = compose.onNodeWithText("ARCHIVE / PANORAMA").fetchSemanticsNode().boundsInRoot
+        val start = album.center - scene.topLeft
+        val behindHeading = Offset(start.x, heading.center.y - scene.top)
+        assertTrue("The first album should start below the toolbar", start.y > behindHeading.y)
+
+        // Move the real hit target behind the opaque heading. The renderer may still preload
+        // that album, but a touch in the toolbar must not select its now-invisible face.
+        canvas.performTouchInput {
+            down(start)
+            moveTo(behindHeading, delayMillis = 250)
+            up()
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("panorama-album-demo-0", useUnmergedTree = true).assertDoesNotExist()
+        canvas.performTouchInput { click(behindHeading) }
+        compose.onNodeWithTag("panorama-actions").assertDoesNotExist()
+
+        compose.onNodeWithContentDescription("总览").performClick()
         compose.waitForIdle()
     }
 

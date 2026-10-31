@@ -77,6 +77,7 @@ internal suspend fun PointerInputScope.detectArchiveNavigation(
 }
 
 internal suspend fun PointerInputScope.detectPanoramaNavigation(
+    acceptStart: (Offset) -> Boolean,
     onTap: (Offset) -> Unit,
     onStart: () -> Unit,
     onTransform: (centroid: Offset, pan: Offset, zoom: Float) -> Unit,
@@ -84,6 +85,7 @@ internal suspend fun PointerInputScope.detectPanoramaNavigation(
 ) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
+        if (!acceptStart(down.position)) return@awaitEachGesture
         var multiplePointers = false
         var transforming = false
         var cancelled = down.isConsumed

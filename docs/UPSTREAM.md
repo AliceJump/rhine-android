@@ -46,7 +46,8 @@ claim to include RhinE's entire 60-frame front-facing inspection sequence.
 - The case image is decoded once for a mounted shelf.
 - The close shelf requests nearby covers; the panorama requests covers around its visible
   viewport, so dragging through a large library does not decode the entire collection.
-- Cover decoding is on `Dispatchers.IO`, with a maximum decoded dimension of 512 px.
+- Cover decoding is on `Dispatchers.IO`. The close shelf uses a maximum decoded dimension
+  of 512 px; the panorama uses 256, 192, or 128 px, depending on the visible cover count.
 - The in-memory cover cache is capped at 8 MiB.
 - Cover paths must resolve inside the application's private files or cache directory.
 - Empty or unavailable cover art uses an original geometric placeholder drawn by code.

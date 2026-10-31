@@ -32,24 +32,24 @@ class ArchiveSmokeTest {
         compose.onNodeWithText("DEMO ARCHIVE / 示例档案").assertIsDisplayed()
         compose.onNodeWithText("尚未播放").assertIsDisplayed()
         compose.onNodeWithContentDescription("播放").assertIsNotEnabled()
-        SmokeScreenshots.capture("01-archive-light").recycle()
+        SmokeScreenshots.capture("01-archive-light", compose.activity).recycle()
 
         compose.onNodeWithText("02  曲目").performClick()
         compose.onNodeWithText("档案架还没有音乐").assertIsDisplayed()
         compose.onNodeWithText("0 TRACKS").assertIsDisplayed()
-        SmokeScreenshots.capture("02-tracks-empty").recycle()
+        SmokeScreenshots.capture("02-tracks-empty", compose.activity).recycle()
 
         compose.onNodeWithText("04  外观").performClick()
         compose.onNodeWithText("LIGHT").performClick()
         compose.waitForIdle()
-        val light = SmokeScreenshots.capture("03-appearance-light")
+        val light = SmokeScreenshots.capture("03-appearance-light", compose.activity)
         val lightLuminance = Color.luminance(light.getPixel(5, light.height / 2))
         light.recycle()
 
         compose.onNodeWithText("DARK").performClick()
         compose.waitForIdle()
         compose.onNodeWithText("你的聆听空间").assertIsDisplayed()
-        val dark = SmokeScreenshots.capture("04-appearance-dark")
+        val dark = SmokeScreenshots.capture("04-appearance-dark", compose.activity)
         val darkLuminance = Color.luminance(dark.getPixel(5, dark.height / 2))
         dark.recycle()
         assertTrue("The dark choice must visibly change the screen", darkLuminance < lightLuminance - .2f)
@@ -73,7 +73,7 @@ class ArchiveSmokeTest {
         }
         compose.waitForIdle()
         compose.onNodeWithText("DEMO ARCHIVE / 示例档案").assertIsDisplayed()
-        SmokeScreenshots.capture("05-archive-landscape").recycle()
+        SmokeScreenshots.capture("05-archive-landscape", compose.activity).recycle()
         compose.activityRule.scenario.onActivity {
             it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
