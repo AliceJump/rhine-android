@@ -214,6 +214,7 @@ internal fun PanoramaShelf(
         val backgroundPoint = frame.backgroundPoint()
         Box(Modifier.fillMaxSize().testTag("archive-scene").semantics {
             this[ArchiveExpansionKey] = expansion
+            this[ArchiveCaseAssetReadyKey] = asset != null
             this[ArchiveSelectedAlbumKey] = selectedAlbumId.orEmpty()
             this[ArchiveBrowseAnchorKey] = browseAnchorId.orEmpty()
             this[ArchiveCameraZoomKey] = camera.zoom

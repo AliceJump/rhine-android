@@ -20,6 +20,7 @@ import io.github.alicejump.rhine.ui.ArchiveBrowseAnchorKey
 import io.github.alicejump.rhine.ui.ArchiveCameraCenterXKey
 import io.github.alicejump.rhine.ui.ArchiveCameraCenterYKey
 import io.github.alicejump.rhine.ui.ArchiveCameraZoomKey
+import io.github.alicejump.rhine.ui.ArchiveCaseAssetReadyKey
 import io.github.alicejump.rhine.ui.ArchiveCaseCenterXKey
 import io.github.alicejump.rhine.ui.ArchiveCaseCenterYKey
 import io.github.alicejump.rhine.ui.ArchiveCaseHeightKey
@@ -44,6 +45,7 @@ internal class ArchiveSceneProbe(private val compose: ComposeTestRule) {
     fun selectedId(): String = scene().config[ArchiveSelectedAlbumKey]
     fun anchorId(): String = scene().config[ArchiveBrowseAnchorKey]
     fun expansion(): Float = scene().config[ArchiveExpansionKey]
+    fun caseAssetReady(): Boolean = scene().config[ArchiveCaseAssetReadyKey]
     fun zoom(): Float = scene().config[ArchiveCameraZoomKey]
     fun cameraCenter(): Offset = scene().config.let { Offset(it[ArchiveCameraCenterXKey], it[ArchiveCameraCenterYKey]) }
     fun worldWidth(): Float = scene().config[ArchiveVisibleWorldWidthKey]
@@ -87,7 +89,8 @@ internal class ArchiveSceneProbe(private val compose: ComposeTestRule) {
 
     fun awaitScene() {
         compose.waitUntil(10_000) {
-            compose.onAllNodesWithTag("archive-scene", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("archive-scene", useUnmergedTree = true).fetchSemanticsNodes()
+                .any { it.config[ArchiveCaseAssetReadyKey] }
         }
         compose.waitForIdle()
     }

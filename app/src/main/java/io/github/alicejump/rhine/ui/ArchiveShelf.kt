@@ -94,8 +94,8 @@ internal fun ArchiveShelf(
             override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
         }
     }
-    val asset by produceState<CaseAsset?>(null, context) {
-        value = withContext(Dispatchers.IO) { readCaseAsset(context) }
+    val asset by produceState(CaseAssetCache.current, context) {
+        if (value == null) value = withContext(Dispatchers.IO) { CaseAssetCache.load(context) }
     }
     PanoramaShelf(
         albums = albums, selectedAlbumId = selectedAlbumId, browseAnchorId = browseAnchorId,

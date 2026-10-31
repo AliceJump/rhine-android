@@ -24,6 +24,16 @@ import org.json.JSONObject
 internal data class CaseAsset(val bitmap: Bitmap, val coverQuad: FloatArray, val logicalSize: Float,
     val projection: ShelfProjection = ShelfProjection())
 
+/** The single bundled case stays decoded across Activity recreation. No Activity is retained. */
+internal object CaseAssetCache {
+    @Volatile var current: CaseAsset? = null
+        private set
+
+    @Synchronized
+    fun load(context: Context): CaseAsset? = current
+        ?: readCaseAsset(context.applicationContext)?.also { current = it }
+}
+
 internal fun readCaseAsset(context: Context): CaseAsset? = runCatching {
     val metadata = context.assets.open("rhine/marble/case.json").bufferedReader().use { JSONObject(it.readText()) }
     val quad = metadata.getJSONObject("array").getJSONArray("cover")

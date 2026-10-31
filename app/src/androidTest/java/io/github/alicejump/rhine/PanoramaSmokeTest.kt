@@ -150,7 +150,7 @@ class PanoramaSmokeTest {
             step("tablet capture portrait overview")
             SmokeScreenshots.capture("09-panorama-tablet-portrait", compose.activity).recycle()
             step("tablet portrait overview captured")
-            rotateTo(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+            rotateTo(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE, requireAssetContinuity = true)
             shelf.awaitMode(true)
             step("tablet check landscape viewport and stable addresses")
             assertTrue("Landscape reveals a wider range", shelf.worldWidth() > portraitWidth)
@@ -177,7 +177,7 @@ class PanoramaSmokeTest {
             val camera = shelf.cameraCenter()
             val zoom = shelf.zoom()
             val anchor = shelf.anchorId()
-            rotateTo(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+            rotateTo(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, requireAssetContinuity = true)
             shelf.awaitMode(true)
             step("tablet check free camera and selection after rotation")
             shelf.assertSelected("demo-5")
@@ -234,7 +234,7 @@ class PanoramaSmokeTest {
         shelf.awaitMode(false)
     }
 
-    private fun rotateTo(orientation: Int) {
+    private fun rotateTo(orientation: Int, requireAssetContinuity: Boolean = false) {
         val landscape = orientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         val expected = if (landscape) Configuration.ORIENTATION_LANDSCAPE else Configuration.ORIENTATION_PORTRAIT
         var previousActivity: MainActivity? = null
@@ -268,6 +268,9 @@ class PanoramaSmokeTest {
         val window = checkNotNull(stable)
         step("rotation native ready: activity=${System.identityHashCode(window.activity)}, window=${System.identityHashCode(window.view)}, ${window.width}x${window.height}")
         compose.waitForIdle()
+        if (requireAssetContinuity) {
+            assertTrue("The first stable rotated scene must retain the loaded case material", shelf.caseAssetReady())
+        }
         val bounds = compose.onRoot().fetchSemanticsNode().boundsInRoot
         assertTrue("The Compose root must match the stable native orientation", if (landscape) bounds.width > bounds.height else bounds.height > bounds.width)
         step("rotation Compose sync done: $expected")
