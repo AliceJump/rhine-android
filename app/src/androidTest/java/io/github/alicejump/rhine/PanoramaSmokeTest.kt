@@ -2,6 +2,10 @@ package io.github.alicejump.rhine
 
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import android.view.View
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -16,6 +20,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.lifecycle.Lifecycle
 import androidx.test.espresso.Espresso.pressBack
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.alicejump.rhine.ui.ArchiveAlbumFocusKey
@@ -26,15 +31,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /** Real exposed-edge touches and pinch gestures exercise the dense shelf's selection contract. */
 @RunWith(AndroidJUnit4::class)
 class PanoramaSmokeTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private val shelf get() = ArchiveSceneProbe(compose)
+    private var progress: PanoramaTestProgress? = null
 
     @Test
-    fun denseShelfKeepsExplicitSelectionThroughBrowsingAndUserZoom() {
+    fun denseShelfKeepsExplicitSelectionThroughBrowsingAndUserZoom() = withProgress("phone dense shelf") {
         val originalOrientation = compose.activity.requestedOrientation
         try {
             rotateTo(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
@@ -43,6 +52,7 @@ class PanoramaSmokeTest {
             assertEquals("The anchor is a browsing position, not a selection", "demo-0", shelf.anchorId())
             assertTrue("All cases start lowered", shelf.visibleAlbums().all { it.config[ArchiveAlbumFocusKey] < .001f })
             compose.onNodeWithContentDescription("取消选择").assertIsNotEnabled()
+            step("phone enter panorama with real pinch")
             shelf.pinch(.30f)
             shelf.awaitMode(true)
             shelf.assertSelected("")
@@ -58,6 +68,7 @@ class PanoramaSmokeTest {
             SmokeScreenshots.capture("06-panorama-phone-overview", compose.activity).recycle()
 
             // This target is the case's exposed sliver, not its occluded full face.
+            step("phone select demo-1 and open details")
             shelf.touchAlbum("demo-1")
             shelf.assertSelected("demo-1")
             assertEquals(1f, shelf.focus("demo-1"), .01f)
@@ -79,6 +90,7 @@ class PanoramaSmokeTest {
             assertEquals("Overview must not lower the selection", 1f, shelf.focus("demo-1"), .01f)
             compose.onNodeWithTag("panorama-actions").assertDoesNotExist()
 
+            step("phone select demo-5 and zoom back to shelf")
             shelf.touchAlbum("demo-5")
             shelf.assertSelected("demo-5")
             assertEquals(1f, shelf.focus("demo-5"), .01f)
@@ -90,6 +102,7 @@ class PanoramaSmokeTest {
             compose.onNodeWithTag("panorama-mode").assertDoesNotExist()
             compose.onNodeWithContentDescription("播放").assertIsNotEnabled()
 
+            step("phone re-enter and cancel via blank space")
             compose.onNodeWithText("全景浏览").performClick()
             shelf.awaitMode(true)
             shelf.assertSelected("demo-5")
@@ -105,21 +118,24 @@ class PanoramaSmokeTest {
             shelf.awaitMode(false)
             shelf.assertSelected("")
         } finally {
+            step("phone restore orientation")
             compose.activityRule.scenario.onActivity { it.requestedOrientation = originalOrientation }
         }
     }
 
     @Test
-    fun tabletChangesVisibleRangeWithoutReaddressingTheShelfOrLosingSelection() {
+    fun tabletChangesVisibleRangeWithoutReaddressingTheShelfOrLosingSelection() = withProgress("tablet dense shelf") {
         val originalOrientation = compose.activity.requestedOrientation
         val originalSize = Regex("Override size: ([0-9]+x[0-9]+)").find(MotionTestDevice.shell("wm size"))?.groupValues?.get(1)
         val originalDensity = Regex("Override density: ([0-9]+)").find(MotionTestDevice.shell("wm density"))?.groupValues?.get(1)
         try {
+            step("tablet configure native size and density")
             MotionTestDevice.shell("wm size 1600x2560")
             MotionTestDevice.shell("wm density 320")
             rotateTo(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
             compose.waitUntil(10_000) { compose.activity.resources.configuration.smallestScreenWidthDp >= 720 }
             awaitArchive()
+            step("tablet enter panorama")
             compose.onNodeWithText("全景浏览").performClick()
             shelf.awaitMode(true)
             shelf.assertSelected("")
@@ -127,24 +143,31 @@ class PanoramaSmokeTest {
             val portraitHeight = shelf.worldHeight()
             val addresses = visibleAddresses()
             assertTrue("The dense shelf exposes individually hittable cases", addresses.size >= 4)
+            step("tablet capture portrait overview")
             SmokeScreenshots.capture("09-panorama-tablet-portrait", compose.activity).recycle()
+            step("tablet portrait overview captured")
             rotateTo(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
             shelf.awaitMode(true)
+            step("tablet check landscape viewport and stable addresses")
             assertTrue("Landscape reveals a wider range", shelf.worldWidth() > portraitWidth)
             assertTrue("Portrait reveals a taller range", shelf.worldHeight() < portraitHeight)
             val landscapeAddresses = visibleAddresses()
             val shared = addresses.keys.intersect(landscapeAddresses.keys)
             assertTrue("Rotation must leave common albums visible", shared.isNotEmpty())
             shared.forEach { assertEquals("Stable shelf address of $it", addresses[it], landscapeAddresses[it]) }
+            step("tablet capture landscape overview")
             SmokeScreenshots.capture("10-panorama-tablet-landscape", compose.activity).recycle()
 
+            step("tablet select demo-5")
             shelf.touchAlbum("demo-5")
             shelf.assertSelected("demo-5")
             shelf.awaitMode(true)
             assertCardInsideScene()
+            step("tablet capture landscape selection")
             SmokeScreenshots.capture("11-panorama-tablet-landscape-focus", compose.activity).recycle()
             val selectedAddress = shelf.address("demo-5")
             // Free-camera rotation preserves world center; selected-card framing may recompose.
+            step("tablet pan into free camera mode")
             shelf.pan(-.08f, .05f)
             shelf.assertSelected("demo-5")
             val camera = shelf.cameraCenter()
@@ -152,19 +175,24 @@ class PanoramaSmokeTest {
             val anchor = shelf.anchorId()
             rotateTo(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
             shelf.awaitMode(true)
+            step("tablet check free camera and selection after rotation")
             shelf.assertSelected("demo-5")
             assertEquals(anchor, shelf.anchorId())
             assertEquals(zoom, shelf.zoom(), .005f)
             assertEquals(camera.x, shelf.cameraCenter().x, 3f)
             assertEquals(camera.y, shelf.cameraCenter().y, 3f)
             assertEquals(selectedAddress, shelf.address("demo-5"))
+            step("tablet capture portrait selection")
             SmokeScreenshots.capture("12-panorama-tablet-portrait-focus", compose.activity).recycle()
+            step("tablet off-center zoom must remain in panorama")
             assertOffCenterZoomDoesNotExit()
             shelf.assertSelected("demo-5")
+            step("tablet explicitly exit panorama")
             compose.onNodeWithContentDescription("退出全景").performClick()
             shelf.awaitMode(false)
             shelf.assertSelected("demo-5")
         } finally {
+            step("tablet restore native size, density and orientation")
             MotionTestDevice.shell("wm size " + (originalSize ?: "reset"))
             MotionTestDevice.shell("wm density " + (originalDensity ?: "reset"))
             compose.activityRule.scenario.onActivity { it.requestedOrientation = originalOrientation }
@@ -203,17 +231,84 @@ class PanoramaSmokeTest {
     }
 
     private fun rotateTo(orientation: Int) {
-        compose.activityRule.scenario.onActivity { it.requestedOrientation = orientation }
         val landscape = orientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         val expected = if (landscape) Configuration.ORIENTATION_LANDSCAPE else Configuration.ORIENTATION_PORTRAIT
-        compose.waitUntil(10_000) {
-            runCatching {
-                val bounds = compose.onRoot().fetchSemanticsNode().boundsInRoot
-                compose.activity.resources.configuration.orientation == expected &&
-                    if (landscape) bounds.width > bounds.height else bounds.height > bounds.width
-            }.getOrDefault(false)
+        var previousActivity: MainActivity? = null
+        var previousOrientation = Configuration.ORIENTATION_UNDEFINED
+        compose.activityRule.scenario.onActivity {
+            previousActivity = it
+            previousOrientation = it.resources.configuration.orientation
+            step("rotation requested: $previousOrientation -> $expected, activity=${System.identityHashCode(it)}")
+            it.requestedOrientation = orientation
         }
+        val recreationExpected = previousOrientation != expected
+        fun ready(window: NativeWindow): Boolean =
+            (!recreationExpected || window.activity !== previousActivity) && window.resumed &&
+                window.attached && window.laidOut && window.shown && window.orientation == expected &&
+                window.width > 0 && window.height > 0 &&
+                if (landscape) window.width > window.height else window.height > window.width
+
+        var stable: NativeWindow? = null
+        MotionTestDevice.await("Rotation must produce a stable resumed native window ($previousOrientation -> $expected)") {
+            val first = nativeWindow() ?: return@await false
+            if (!ready(first)) return@await false
+            // Choreographer belongs to the main thread, so this wait survives old View removal.
+            // Do not enter Compose synchronization while its previous root can still detach.
+            MotionTestDevice.awaitFrames(2)
+            val second = nativeWindow() ?: return@await false
+            val sameWindow = ready(second) && first.activity === second.activity && first.view === second.view &&
+                first.width == second.width && first.height == second.height
+            if (sameWindow) stable = second
+            sameWindow
+        }
+        val window = checkNotNull(stable)
+        step("rotation native ready: activity=${System.identityHashCode(window.activity)}, window=${System.identityHashCode(window.view)}, ${window.width}x${window.height}")
         compose.waitForIdle()
+        val bounds = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        assertTrue("The Compose root must match the stable native orientation", if (landscape) bounds.width > bounds.height else bounds.height > bounds.width)
+        step("rotation Compose sync done: $expected")
+    }
+
+    private fun nativeWindow(): NativeWindow? {
+        var window: NativeWindow? = null
+        try {
+            compose.activityRule.scenario.onActivity { activity ->
+                val view = activity.window.decorView
+                window = NativeWindow(activity, view, activity.resources.configuration.orientation,
+                    view.width, view.height, activity.lifecycle.currentState == Lifecycle.State.RESUMED,
+                    view.isAttachedToWindow, view.isLaidOut, view.isShown)
+            }
+        } catch (_: IllegalStateException) {
+            // ActivityScenario can briefly have no current Activity during recreation.
+        }
+        return window
+    }
+
+    private data class NativeWindow(
+        val activity: MainActivity,
+        val view: View,
+        val orientation: Int,
+        val width: Int,
+        val height: Int,
+        val resumed: Boolean,
+        val attached: Boolean,
+        val laidOut: Boolean,
+        val shown: Boolean,
+    )
+
+    private fun withProgress(name: String, block: () -> Unit) {
+        val diagnostic = PanoramaTestProgress(name, Thread.currentThread())
+        progress = diagnostic
+        try {
+            block()
+        } finally {
+            progress = null
+            diagnostic.close()
+        }
+    }
+
+    private fun step(name: String) {
+        progress?.mark(name)
     }
 
     private fun visibleAddresses(): Map<String, Pair<Int, Int>> = shelf.visibleAlbums().associate {
@@ -248,4 +343,44 @@ class PanoramaSmokeTest {
     private fun contains(outer: Rect, inner: Rect): Boolean =
         inner.left >= outer.left - 1f && inner.top >= outer.top - 1f &&
             inner.right <= outer.right + 1f && inner.bottom <= outer.bottom + 1f
+}
+
+/** Reports a blocked test without changing its result or asking the blocked UI thread to run code. */
+private class PanoramaTestProgress(name: String, private val testThread: Thread) : AutoCloseable {
+    private data class Stage(val name: String, val since: Long)
+    private val current = AtomicReference(Stage(name, SystemClock.uptimeMillis()))
+    private val watcher = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "panorama-test-watchdog").apply { isDaemon = true }
+    }
+    private var reported: Stage? = null
+
+    init {
+        mark(name)
+        watcher.scheduleWithFixedDelay({
+            val stage = current.get()
+            val elapsed = SystemClock.uptimeMillis() - stage.since
+            if (elapsed >= 60_000 && reported !== stage) {
+                reported = stage
+                Log.e("PanoramaSmoke", "No test progress for ${elapsed}ms at: ${stage.name}")
+                dump("instrumentation", testThread)
+                dump("main", Looper.getMainLooper().thread)
+            }
+        }, 60, 5, TimeUnit.SECONDS)
+    }
+
+    fun mark(name: String) {
+        current.set(Stage(name, SystemClock.uptimeMillis()))
+        Log.i("PanoramaSmoke", name)
+    }
+
+    private fun dump(label: String, thread: Thread) {
+        val lines = thread.stackTrace.map { "    at $it" }
+        lines.chunked(20).forEachIndexed { index, part ->
+            Log.e("PanoramaSmoke", "$label thread '${thread.name}' state=${thread.state}, stack part $index\n${part.joinToString("\n")}")
+        }
+    }
+
+    override fun close() {
+        watcher.shutdownNow()
+    }
 }

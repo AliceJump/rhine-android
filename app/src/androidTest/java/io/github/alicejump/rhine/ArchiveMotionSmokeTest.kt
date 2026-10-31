@@ -161,10 +161,10 @@ class ArchiveMotionSmokeTest {
                 compose.onNodeWithContentDescription("总览").performSemanticsAction(SemanticsActions.OnClick)
                 settle()
                 shelf.touchBlank()
-                shelf.assertSelected("")
                 advanceUntil("Explicit blank cancellation must lower the case through an intermediate lift") {
-                    shelf.focus("demo-5") in .05f.. .95f
+                    shelf.selectedId().isEmpty() && shelf.focus("demo-5") in .05f.. .95f
                 }
+                shelf.assertSelected("")
                 SmokeScreenshots.capture("17-motion-cancel-middle", compose.activity).recycle()
                 settle()
                 assertEquals(0f, shelf.focus("demo-5"), .01f)

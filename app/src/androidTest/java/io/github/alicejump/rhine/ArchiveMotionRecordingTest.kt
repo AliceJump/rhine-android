@@ -59,7 +59,7 @@ class ArchiveMotionRecordingTest {
                 awaitAction("全景浏览")
                 val label = if (tablet) "tablet-landscape-motion" else "phone-portrait-motion"
                 val size = if (tablet) "1280x800" else "720x1280"
-                ScreenRecording.start(label, size).use {
+                ScreenRecording.start(label, size).use { recording ->
                     MotionTestDevice.awaitFrames(24)
                     // Begin with every case lowered, then explicitly select A.
                     click("QUIET ORBIT")
@@ -94,6 +94,7 @@ class ArchiveMotionRecordingTest {
                     click("退出全景")
                     awaitAction("全景浏览")
                     MotionTestDevice.awaitFrames(42)
+                    recording.assertStillRecording()
                 }
                 scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
             }
@@ -201,11 +202,19 @@ private class ScreenRecording(
     private val shellPath: String,
     private val script: File,
     private val pid: Int,
+    private val descriptor: ParcelFileDescriptor,
     private val reader: BufferedReader,
     private val executor: ExecutorService,
     private val output: Future<String>,
 ) : Closeable {
+    fun assertStillRecording() {
+        check(!output.isDone) {
+            "The screen recorder stopped before the complete motion sequence: ${file.name}"
+        }
+    }
+
     override fun close() {
+        var failure: Throwable? = null
         try {
             if (!output.isDone) {
                 // Do not signal a recycled PID or someone else's recorder.
@@ -233,12 +242,10 @@ private class ScreenRecording(
             } finally {
                 metadata.release()
             }
-        } finally {
-            reader.close()
-            executor.shutdownNow()
-            script.delete()
-            MotionTestDevice.shell("rm -f $shellPath")
+        } catch (error: Throwable) {
+            failure = error
         }
+        cleanupOutput(descriptor, reader, executor, output, script, shellPath, failure)?.let { throw it }
     }
 
     companion object {
@@ -258,32 +265,74 @@ private class ScreenRecording(
                     "  if test -s $shellPath; then echo ready; fi\n  exit\nfi\n" +
                     "echo ${'$'}${'$'}\nexec screenrecord --size $size --bit-rate 4000000 --time-limit 45 $shellPath 2>&1\n",
             )
-            val reader = ParcelFileDescriptor.AutoCloseInputStream(
-                instrumentation.uiAutomation.executeShellCommand("sh ${script.absolutePath}"),
-            ).bufferedReader()
+            val descriptor = instrumentation.uiAutomation.executeShellCommand("sh ${script.absolutePath}")
+            val reader = ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader()
             val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "motion-recording-output").apply { isDaemon = true } }
+            var pendingRead: Future<*>? = null
+            var recording: ScreenRecording? = null
             try {
-                val pid = executor.submit<String> { checkNotNull(reader.readLine()) }.get(5, TimeUnit.SECONDS).trim().toInt()
+                val pidRead = executor.submit<String> { checkNotNull(reader.readLine()) }
+                pendingRead = pidRead
+                val pid = pidRead.get(5, TimeUnit.SECONDS).trim().toInt()
                 check(pid > 1)
                 val output = executor.submit<String> { reader.readText() }
-                val recording = ScreenRecording(file, shellPath, script, pid, reader, executor, output)
-                try {
-                    MotionTestDevice.await("The screen recorder did not start") {
-                        check(!output.isDone) { "The screen recorder exited before recording the scene: ${output.get()}" }
-                        MotionTestDevice.shell("sh ${script.absolutePath} ready").trim() == "ready"
-                    }
-                    return recording
-                } catch (error: Throwable) {
-                    runCatching { recording.close() }.exceptionOrNull()?.let(error::addSuppressed)
-                    throw error
+                pendingRead = output
+                val started = ScreenRecording(file, shellPath, script, pid, descriptor, reader, executor, output)
+                recording = started
+                MotionTestDevice.await("The screen recorder did not start") {
+                    check(!output.isDone) { "The screen recorder exited before recording the scene: ${output.get()}" }
+                    MotionTestDevice.shell("sh ${script.absolutePath} ready").trim() == "ready"
                 }
+                return started
             } catch (error: Throwable) {
-                reader.close()
-                executor.shutdownNow()
-                script.delete()
-                MotionTestDevice.shell("rm -f $shellPath")
+                val started = recording
+                if (started != null) {
+                    runCatching { started.close() }.exceptionOrNull()?.let(error::addSuppressed)
+                } else {
+                    cleanupOutput(descriptor, reader, executor, pendingRead, script, shellPath, error)
+                }
                 throw error
             }
+        }
+
+        private fun cleanupOutput(
+            descriptor: ParcelFileDescriptor,
+            reader: BufferedReader,
+            executor: ExecutorService,
+            pendingRead: Future<*>?,
+            script: File,
+            shellPath: String,
+            primaryFailure: Throwable?,
+        ): Throwable? {
+            var failure = primaryFailure
+            var interrupted = primaryFailure is InterruptedException
+            fun cleanup(action: () -> Unit) {
+                try {
+                    action()
+                } catch (error: Throwable) {
+                    if (error is InterruptedException) interrupted = true
+                    val primary = failure
+                    if (primary == null) failure = error
+                    else if (primary !== error) primary.addSuppressed(error)
+                }
+            }
+            // BufferedReader.close() takes the same lock as its blocking read. Close
+            // the original descriptor directly, before waiting for the reader thread.
+            cleanup { descriptor.close() }
+            cleanup { pendingRead?.cancel(true) }
+            cleanup { executor.shutdownNow() }
+            var terminated = false
+            cleanup {
+                terminated = executor.awaitTermination(2, TimeUnit.SECONDS)
+                check(terminated) { "The recording output reader did not stop after its descriptor was closed" }
+            }
+            // Do not assume closing a descriptor always wakes a native read. If it did
+            // not, retain the timeout failure instead of blocking again on the Reader lock.
+            if (terminated) cleanup { reader.close() }
+            cleanup { script.delete() }
+            cleanup { MotionTestDevice.shell("rm -f $shellPath") }
+            if (interrupted) Thread.currentThread().interrupt()
+            return failure
         }
     }
 }
