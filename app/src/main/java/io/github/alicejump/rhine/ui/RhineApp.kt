@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -78,40 +79,39 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
     val realLibrary = model.albums.isNotEmpty()
     val canImport = !model.scanning && !model.loading
     val colors = MaterialTheme.colorScheme
+    val configuration = LocalConfiguration.current
+    val compactLandscape = configuration.screenWidthDp >= 600 && configuration.screenHeightDp < 500
 
     Scaffold(
         containerColor = colors.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
             Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars).background(colors.background)) {
-                MiniPlayer(model, onOpen = { view = View.Playing })
-                HorizontalDivider(color = colors.outline.copy(alpha = .25f))
-                Row(Modifier.fillMaxWidth().height(62.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    View.entries.forEach { entry ->
-                        val active = entry == view
-                        Column(
-                            Modifier.weight(1f).fillMaxHeight().clickable { view = entry },
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            Box(Modifier.size(4.dp).background(if (active) colors.primary else Color.Transparent))
-                            Spacer(Modifier.height(5.dp))
-                            Text("${entry.code}  ${entry.label}", fontSize = 12.sp,
-                                color = if (active) colors.onSurface else colors.onSurfaceVariant,
-                                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+                if (compactLandscape) {
+                    HorizontalDivider(color = colors.outline.copy(alpha = .3f))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            MiniPlayer(model, onOpen = { view = View.Playing }, compact = true)
                         }
+                        VerticalDivider(Modifier.height(40.dp), color = colors.outline.copy(alpha = .25f))
+                        NavigationTabs(view, { view = it }, Modifier.weight(1f), compact = true)
                     }
+                } else {
+                    MiniPlayer(model, onOpen = { view = View.Playing })
+                    HorizontalDivider(color = colors.outline.copy(alpha = .25f))
+                    NavigationTabs(view, { view = it })
                 }
             }
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Header(onChooseFolder, canImport = canImport)
+            Header(onChooseFolder, canImport = canImport, compact = compactLandscape)
             if (model.scanning) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("正在整理档案 · 已读取 ${model.scannedCount} 首", Modifier.weight(1f), fontSize = 12.sp)
-                        TextButton(onClick = model::cancelScan) { Text("取消") }
+                        TextButton(onClick = model::cancelScan,
+                            colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface)) { Text("取消") }
                     }
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
@@ -131,6 +131,7 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
                         onPlay = { if (realLibrary) model.playAlbum(selected) else onChooseFolder() },
                         onOpen = { showAlbum = true },
                         canImport = canImport,
+                        compact = compactLandscape,
                     )
                     View.Tracks -> TrackPage(model.tracks, model.playback.trackId, model::playTrack, onChooseFolder, canImport)
                     View.Playing -> PlayingPage(model, onChooseFolder, canImport)
@@ -165,20 +166,42 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
         onDismissRequest = { showAbout = false },
         title = { Text("Rhine Android · 0.1") },
         text = { Text("独立的 Android 本地音乐播放器。\n\n视觉与盒体素材来自 RhinE / Audio Archive，保留原作者版权及 MIT 许可；Oxanium 字体按 SIL OFL 授权。\n\n首版支持文件夹导入、专辑架、曲目播放和系统媒体控制。同步歌词与音频频谱尚未接入。\n\n仅在本机处理你选择的音乐文件。") },
-        confirmButton = { TextButton(onClick = { showAbout = false }) { Text("知道了") } },
+        confirmButton = { TextButton(onClick = { showAbout = false },
+            colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface)) { Text("知道了") } },
     )
 }
 
 @Composable
-private fun Header(onChooseFolder: () -> Unit, canImport: Boolean) {
+private fun NavigationTabs(view: View, onSelect: (View) -> Unit, modifier: Modifier = Modifier, compact: Boolean = false) {
     val colors = MaterialTheme.colorScheme
-    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+    Row(modifier.fillMaxWidth().height(if (compact) 56.dp else 62.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+        View.entries.forEach { entry ->
+            val active = entry == view
+            Column(
+                Modifier.weight(1f).fillMaxHeight().clickable { onSelect(entry) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Box(Modifier.size(4.dp).background(if (active) colors.primary else Color.Transparent))
+                Spacer(Modifier.height(5.dp))
+                Text("${entry.code}  ${entry.label}", fontSize = 12.sp,
+                    color = if (active) colors.onSurface else colors.onSurfaceVariant,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Header(onChooseFolder: () -> Unit, canImport: Boolean, compact: Boolean) {
+    val colors = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = if (compact) 0.dp else 16.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(43.dp).background(colors.onSurface), contentAlignment = Alignment.Center) {
-            Text("∞", color = colors.surface, fontSize = 35.sp, fontFamily = FontFamily.Serif)
+        Box(Modifier.size(if (compact) 32.dp else 43.dp).background(colors.onSurface), contentAlignment = Alignment.Center) {
+            Text("∞", color = colors.surface, fontSize = if (compact) 28.sp else 35.sp, fontFamily = FontFamily.Serif)
         }
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text("AUDIO ARCHIVE", fontSize = 18.sp, fontFamily = ArchiveFont, fontWeight = FontWeight.SemiBold)
+            Text("AUDIO ARCHIVE", fontSize = if (compact) 16.sp else 18.sp, fontFamily = ArchiveFont, fontWeight = FontWeight.SemiBold)
             Text("RHINE  /  LISTENING TERMINAL", fontSize = 8.sp, letterSpacing = 1.sp, fontFamily = FontFamily.Monospace,
                 color = colors.onSurfaceVariant)
         }
@@ -190,18 +213,18 @@ private fun Header(onChooseFolder: () -> Unit, canImport: Boolean) {
 @Composable
 private fun ArchivePage(
     albums: List<Album>, selected: Album, demo: Boolean, onSelect: (Album) -> Unit,
-    onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean,
+    onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean, compact: Boolean,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
         if (wide) {
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.weight(1.5f).fillMaxHeight()) {
-                    ShelfLabel(demo, albums.size)
+                    ShelfLabel(demo, albums.size, compact)
                     ArchiveShelf(albums, selected.id, onSelect, Modifier.fillMaxWidth().weight(1f))
                 }
-                Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(24.dp)) {
-                    AlbumFile(selected, albums.indexOf(selected), demo, onPlay, onOpen, canImport)
+                Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(if (compact) 16.dp else 24.dp)) {
+                    AlbumFile(selected, albums.indexOf(selected), demo, onPlay, onOpen, canImport, compact)
                 }
             }
         } else {
@@ -218,34 +241,34 @@ private fun ArchivePage(
 }
 
 @Composable
-private fun ShelfLabel(demo: Boolean, count: Int) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun ShelfLabel(demo: Boolean, count: Int, compact: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = if (compact) 8.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Eyebrow(if (demo) "DEMO ARCHIVE / 示例档案" else "LOCAL COLLECTION / 本地馆藏", Modifier.weight(1f))
         Text(String.format(Locale.ROOT, "%02d", count) + " ALBUMS", fontSize = 10.sp, fontFamily = ArchiveFont)
     }
 }
 
 @Composable
-private fun AlbumFile(album: Album, index: Int, demo: Boolean, onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean) {
+private fun AlbumFile(album: Album, index: Int, demo: Boolean, onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean, compact: Boolean = false) {
     val colors = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Eyebrow("ARCHIVE / " + String.format(Locale.ROOT, "%04d", index + 1), Modifier.weight(1f))
         Text(if (demo) "PREVIEW" else "LOCAL AUDIO", color = colors.primary, fontSize = 9.sp,
             modifier = Modifier.border(1.dp, colors.primary.copy(alpha = .65f)).padding(horizontal = 8.dp, vertical = 4.dp))
     }
-    Spacer(Modifier.height(15.dp))
+    Spacer(Modifier.height(if (compact) 10.dp else 15.dp))
     Column(Modifier.fillMaxWidth().border(1.dp, colors.outline.copy(alpha = .4f)).background(colors.surfaceVariant.copy(alpha = .5f))) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("▼ // RHINE: AUDIO ARCHIVE", Modifier.weight(1f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
             Barcode(Modifier.width(62.dp).height(10.dp))
         }
         HorizontalDivider(color = colors.outline.copy(alpha = .4f))
-        Text(album.title, Modifier.padding(horizontal = 14.dp, vertical = 15.dp), fontFamily = ArchiveFont,
+        Text(album.title, Modifier.padding(horizontal = 14.dp, vertical = if (compact) 10.dp else 15.dp), fontFamily = ArchiveFont,
             fontSize = 23.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Box(Modifier.fillMaxWidth().height(3.dp).background(colors.primary.copy(alpha = .8f)))
     }
-    Text(album.artist, Modifier.padding(top = 14.dp), color = colors.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    Row(Modifier.fillMaxWidth().padding(top = 7.dp, bottom = 17.dp), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+    Text(album.artist, Modifier.padding(top = if (compact) 8.dp else 14.dp), color = colors.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Row(Modifier.fillMaxWidth().padding(top = if (compact) 4.dp else 7.dp, bottom = if (compact) 10.dp else 17.dp), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
         Text(if (demo) "尚未导入音乐" else "${album.tracks.size} 首曲目", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(if (demo) "仅供界面预览" else formatTime(album.tracks.sumOf { it.durationMs }), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
     }
@@ -319,11 +342,11 @@ private fun TrackRow(track: Track, index: Int, playing: Boolean, onClick: () -> 
 }
 
 @Composable
-private fun MiniPlayer(model: RhineViewModel, onOpen: () -> Unit) {
+private fun MiniPlayer(model: RhineViewModel, onOpen: () -> Unit, compact: Boolean = false) {
     val state = model.playback
     val colors = MaterialTheme.colorScheme
-    HorizontalDivider(color = colors.outline.copy(alpha = .3f))
-    Row(Modifier.fillMaxWidth().height(66.dp).padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically) {
+    if (!compact) HorizontalDivider(color = colors.outline.copy(alpha = .3f))
+    Row(Modifier.fillMaxWidth().height(if (compact) 56.dp else 66.dp).padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(32.dp).border(1.dp, colors.outline.copy(alpha = .4f)).clickable(onClick = onOpen), contentAlignment = Alignment.Center) {
             Text("∞", color = if (state.playing) colors.primary else colors.onSurfaceVariant, fontSize = 25.sp)
         }
@@ -385,7 +408,8 @@ private fun PlayingPage(model: RhineViewModel, onImport: () -> Unit, canImport: 
             IconButton(onClick = model::next, enabled = state.trackId != null) { Icon(Icons.Default.SkipNext, "下一首", Modifier.size(30.dp)) }
             Spacer(Modifier.width(48.dp))
         }
-        if (model.tracks.isEmpty()) TextButton(onClick = onImport, enabled = canImport) { Text("选择音乐文件夹") }
+        if (model.tracks.isEmpty()) TextButton(onClick = onImport, enabled = canImport,
+            colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface)) { Text("选择音乐文件夹") }
         else Text("LOCAL PLAYBACK / 本地播放", color = colors.onSurfaceVariant, fontFamily = FontFamily.Monospace, fontSize = 9.sp)
     }
 }
@@ -452,14 +476,17 @@ private fun StylePage(model: RhineViewModel, onImport: () -> Unit, canImport: Bo
         Text("通过系统选择器授权一个文件夹。音乐留在原位置；新选择的文件夹会替换当前馆藏。",
             color = colors.onSurfaceVariant, fontSize = 12.sp, lineHeight = 19.sp)
         Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = onImport, enabled = canImport, shape = RoundedCornerShape(0.dp)) { Text("选择文件夹") }
-            TextButton(onClick = model::rescan, enabled = model.lastFolder != null && canImport) { Text("重新扫描") }
+            OutlinedButton(onClick = onImport, enabled = canImport, shape = RoundedCornerShape(0.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurface)) { Text("选择文件夹") }
+            TextButton(onClick = model::rescan, enabled = model.lastFolder != null && canImport,
+                colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface)) { Text("重新扫描") }
         }
         Spacer(Modifier.height(15.dp))
         SectionTitle("04", "关于")
         Text("RHINE ANDROID / 0.1", fontFamily = ArchiveFont, fontSize = 12.sp, modifier = Modifier.padding(top = 17.dp))
         Text("音乐在这里，思绪在别处。", fontSize = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 7.dp))
-        TextButton(onClick = onAbout, modifier = Modifier.padding(top = 8.dp)) { Text("版本与致谢") }
+        TextButton(onClick = onAbout, modifier = Modifier.padding(top = 8.dp),
+            colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface)) { Text("版本与致谢") }
     }
 }
 
@@ -490,7 +517,8 @@ private fun EmptyState(title: String, message: String, onImport: () -> Unit, can
         Text("∞", fontSize = 65.sp, color = MaterialTheme.colorScheme.outline)
         Text(title, fontSize = 20.sp, modifier = Modifier.padding(top = 20.dp))
         Text(message, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 15.dp))
-        OutlinedButton(onClick = onImport, enabled = canImport, shape = RoundedCornerShape(0.dp)) { Text("选择音乐文件夹") }
+        OutlinedButton(onClick = onImport, enabled = canImport, shape = RoundedCornerShape(0.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)) { Text("选择音乐文件夹") }
     }
 }
 

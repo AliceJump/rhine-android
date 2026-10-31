@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -205,6 +206,7 @@ fun ArchiveShelf(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 TextButton(onClick = { selectRelative(-1) }, enabled = selectedIndex > 0,
+                    colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface),
                     modifier = Modifier.semantics { contentDescription = "上一张专辑" }) {
                     Text("←", fontSize = 23.sp)
                 }
@@ -222,6 +224,7 @@ fun ArchiveShelf(
                     )
                 }
                 TextButton(onClick = { selectRelative(1) }, enabled = selectedIndex < albums.lastIndex,
+                    colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface),
                     modifier = Modifier.semantics { contentDescription = "下一张专辑" }) {
                     Text("→", fontSize = 23.sp)
                 }
