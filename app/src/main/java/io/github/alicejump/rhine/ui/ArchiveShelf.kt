@@ -83,15 +83,14 @@ fun ArchiveShelf(
     val context = LocalContext.current.applicationContext
     val density = LocalDensity.current
     val colors = MaterialTheme.colorScheme
-    val sceneColors = remember(colors) {
-        ShelfColors(
-            background = colors.surface.toArgb(),
-            grid = colors.outline.copy(alpha = 0.25f).toArgb(),
-            border = colors.outline.copy(alpha = 0.38f).toArgb(),
-            registration = colors.onSurfaceVariant.copy(alpha = 0.65f).toArgb(),
-            accent = colors.primary.toArgb(),
-        )
-    }
+    // Read the fields directly: MaterialTheme may update an existing ColorScheme instance.
+    val sceneColors = ShelfColors(
+        background = colors.surface.toArgb(),
+        grid = colors.outline.copy(alpha = 0.25f).toArgb(),
+        border = colors.outline.copy(alpha = 0.38f).toArgb(),
+        registration = colors.onSurfaceVariant.copy(alpha = 0.65f).toArgb(),
+        accent = colors.primary.toArgb(),
+    )
     val selectedIndex = albums.indexOfFirst { it.id == selectedAlbumId }.coerceAtLeast(0)
     val position by animateFloatAsState(
         targetValue = selectedIndex.toFloat(),

@@ -11,7 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,13 +69,14 @@ private enum class View(val label: String, val code: String) {
 
 @Composable
 fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
-    var view by remember { mutableStateOf(View.Archive) }
-    var demoSelection by remember { mutableStateOf(DemoAlbums.first().id) }
+    var view by rememberSaveable { mutableStateOf(View.Archive) }
+    var demoSelection by rememberSaveable { mutableStateOf(DemoAlbums.first().id) }
     var showAlbum by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     val library = model.albums.ifEmpty { DemoAlbums }
     val selected = library.firstOrNull { it.id == (model.selectedAlbumId ?: demoSelection) } ?: library.first()
     val realLibrary = model.albums.isNotEmpty()
+    val canImport = !model.scanning && !model.loading
     val colors = MaterialTheme.colorScheme
 
     Scaffold(
@@ -104,7 +106,7 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Header(onChooseFolder, canImport = !model.scanning && !model.loading)
+            Header(onChooseFolder, canImport = canImport)
             if (model.scanning) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -128,12 +130,11 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
                         onSelect = { if (realLibrary) model.selectAlbum(it) else demoSelection = it.id },
                         onPlay = { if (realLibrary) model.playAlbum(selected) else onChooseFolder() },
                         onOpen = { showAlbum = true },
-                        canImport = !model.scanning && !model.loading,
-                        onChooseFolder = onChooseFolder,
+                        canImport = canImport,
                     )
-                    View.Tracks -> TrackPage(model.tracks, model.playback.trackId, model::playTrack, onChooseFolder)
-                    View.Playing -> PlayingPage(model, onChooseFolder)
-                    View.Style -> StylePage(model, onChooseFolder, onAbout = { showAbout = true })
+                    View.Tracks -> TrackPage(model.tracks, model.playback.trackId, model::playTrack, onChooseFolder, canImport)
+                    View.Playing -> PlayingPage(model, onChooseFolder, canImport)
+                    View.Style -> StylePage(model, onChooseFolder, canImport, onAbout = { showAbout = true })
                 }
             }
         }
@@ -147,11 +148,11 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
                 if (selected.tracks.isEmpty()) {
                     Text("这是用于预览界面的示例档案。选择自己的音乐文件夹后，这里会显示真实专辑和歌曲。",
                         fontSize = 14.sp, modifier = Modifier.padding(bottom = 24.dp))
-                    Button(onClick = { showAlbum = false; onChooseFolder() }, enabled = !model.scanning) { Text("选择音乐文件夹") }
+                    Button(onClick = { showAlbum = false; onChooseFolder() }, enabled = canImport) { Text("选择音乐文件夹") }
                 } else {
                     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 440.dp)) {
-                        items(selected.tracks, key = { it.id }) { track ->
-                            TrackRow(track, selected.tracks.indexOf(track) + 1, track.id == model.playback.trackId,
+                        itemsIndexed(selected.tracks, key = { _, track -> track.id }) { index, track ->
+                            TrackRow(track, index + 1, track.id == model.playback.trackId,
                                 onClick = { model.playTrack(track) })
                         }
                     }
@@ -189,7 +190,7 @@ private fun Header(onChooseFolder: () -> Unit, canImport: Boolean) {
 @Composable
 private fun ArchivePage(
     albums: List<Album>, selected: Album, demo: Boolean, onSelect: (Album) -> Unit,
-    onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean, onChooseFolder: () -> Unit,
+    onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
@@ -277,8 +278,8 @@ private fun AlbumFile(album: Album, index: Int, demo: Boolean, onPlay: () -> Uni
 }
 
 @Composable
-private fun TrackPage(tracks: List<Track>, playingId: String?, onPlay: (Track) -> Unit, onImport: () -> Unit) {
-    var query by remember { mutableStateOf("") }
+private fun TrackPage(tracks: List<Track>, playingId: String?, onPlay: (Track) -> Unit, onImport: () -> Unit, canImport: Boolean) {
+    var query by rememberSaveable { mutableStateOf("") }
     val filtered = remember(tracks, query) { tracks.filter { query.isBlank() || "${it.title} ${it.artist} ${it.album}".contains(query.trim(), ignoreCase = true) } }
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Eyebrow("TRACK INDEX / 曲目索引", Modifier.padding(top = 20.dp, bottom = 12.dp))
@@ -287,11 +288,11 @@ private fun TrackPage(tracks: List<Track>, playingId: String?, onPlay: (Track) -
             shape = RoundedCornerShape(0.dp))
         Text("${filtered.size} TRACKS", Modifier.padding(vertical = 12.dp), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         if (tracks.isEmpty()) {
-            EmptyState("档案架还没有音乐", "选择设备中的音乐文件夹，歌曲会按专辑整理。", onImport)
+            EmptyState("档案架还没有音乐", "选择设备中的音乐文件夹，歌曲会按专辑整理。", onImport, canImport)
         } else {
             LazyColumn(Modifier.weight(1f)) {
-                items(filtered, key = { it.id }) { track ->
-                    TrackRow(track, filtered.indexOf(track) + 1, track.id == playingId, onClick = { onPlay(track) })
+                itemsIndexed(filtered, key = { _, track -> track.id }) { index, track ->
+                    TrackRow(track, index + 1, track.id == playingId, onClick = { onPlay(track) })
                 }
             }
         }
@@ -340,7 +341,7 @@ private fun MiniPlayer(model: RhineViewModel, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun PlayingPage(model: RhineViewModel, onImport: () -> Unit) {
+private fun PlayingPage(model: RhineViewModel, onImport: () -> Unit, canImport: Boolean) {
     val state = model.playback
     val colors = MaterialTheme.colorScheme
     val current = model.tracks.firstOrNull { it.id == state.trackId }
@@ -384,7 +385,7 @@ private fun PlayingPage(model: RhineViewModel, onImport: () -> Unit) {
             IconButton(onClick = model::next, enabled = state.trackId != null) { Icon(Icons.Default.SkipNext, "下一首", Modifier.size(30.dp)) }
             Spacer(Modifier.width(48.dp))
         }
-        if (model.tracks.isEmpty()) TextButton(onClick = onImport, enabled = !model.scanning) { Text("选择音乐文件夹") }
+        if (model.tracks.isEmpty()) TextButton(onClick = onImport, enabled = canImport) { Text("选择音乐文件夹") }
         else Text("LOCAL PLAYBACK / 本地播放", color = colors.onSurfaceVariant, fontFamily = FontFamily.Monospace, fontSize = 9.sp)
     }
 }
@@ -422,7 +423,7 @@ private fun CoverArt(path: String?, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StylePage(model: RhineViewModel, onImport: () -> Unit, onAbout: () -> Unit) {
+private fun StylePage(model: RhineViewModel, onImport: () -> Unit, canImport: Boolean, onAbout: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp)) {
         Eyebrow("APPEARANCE / 外观与馆藏")
@@ -451,8 +452,8 @@ private fun StylePage(model: RhineViewModel, onImport: () -> Unit, onAbout: () -
         Text("通过系统选择器授权一个文件夹。音乐留在原位置；新选择的文件夹会替换当前馆藏。",
             color = colors.onSurfaceVariant, fontSize = 12.sp, lineHeight = 19.sp)
         Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = onImport, enabled = !model.scanning && !model.loading, shape = RoundedCornerShape(0.dp)) { Text("选择文件夹") }
-            TextButton(onClick = model::rescan, enabled = model.lastFolder != null && !model.scanning) { Text("重新扫描") }
+            OutlinedButton(onClick = onImport, enabled = canImport, shape = RoundedCornerShape(0.dp)) { Text("选择文件夹") }
+            TextButton(onClick = model::rescan, enabled = model.lastFolder != null && canImport) { Text("重新扫描") }
         }
         Spacer(Modifier.height(15.dp))
         SectionTitle("04", "关于")
@@ -484,12 +485,12 @@ private fun SectionTitle(number: String, title: String) {
 }
 
 @Composable
-private fun EmptyState(title: String, message: String, onImport: () -> Unit) {
+private fun EmptyState(title: String, message: String, onImport: () -> Unit, canImport: Boolean) {
     Column(Modifier.fillMaxWidth().padding(vertical = 50.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("∞", fontSize = 65.sp, color = MaterialTheme.colorScheme.outline)
         Text(title, fontSize = 20.sp, modifier = Modifier.padding(top = 20.dp))
         Text(message, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 15.dp))
-        OutlinedButton(onClick = onImport, shape = RoundedCornerShape(0.dp)) { Text("选择音乐文件夹") }
+        OutlinedButton(onClick = onImport, enabled = canImport, shape = RoundedCornerShape(0.dp)) { Text("选择音乐文件夹") }
     }
 }
 
