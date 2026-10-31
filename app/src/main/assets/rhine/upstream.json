@@ -1,0 +1,38 @@
+{
+  "repository": "https://github.com/ericzhang12111-cell/RhinE",
+  "commit": "52d5cf3c8466dd4dd13cbb33dac1a3be5b20f330",
+  "files": [
+    {
+      "local_path": "app/src/main/assets/rhine/marble/array-clear.png",
+      "upstream_path": "theme/assets/render/case/marble/array-clear.png",
+      "git_blob_sha": "ac9aa33292839a903f87aac5133a7fde29a6e6b0",
+      "sha256": "559e2cc75f0477338c799d8ccf0aec42e9ab5d25876b4b76c9e626099b27152b",
+      "bytes": 969257,
+      "license": "MIT"
+    },
+    {
+      "local_path": "app/src/main/assets/rhine/marble/case.json",
+      "upstream_path": "theme/assets/render/case/marble/case.json",
+      "git_blob_sha": "508d9d6ac414ad3e1c1ee78ecbae03d30cca7310",
+      "sha256": "8facd59952a6c25001b580078281dc4e0948b29b8e2a4247e50c8018d55fc2b2",
+      "bytes": 52237,
+      "license": "MIT"
+    },
+    {
+      "local_path": "app/src/main/res/font/oxanium_regular.ttf",
+      "upstream_path": "theme/assets/fonts/Oxanium-Regular.ttf",
+      "git_blob_sha": "2a08c601afa03efcfd4c1ace15f3f34f823c139e",
+      "sha256": "2b9c2a53ee0a8248ab901463838cc81075b410724046a09683b3cc91870fe52a",
+      "bytes": 28848,
+      "license": "OFL-1.1"
+    },
+    {
+      "local_path": "app/src/main/res/font/oxanium_semibold.ttf",
+      "upstream_path": "theme/assets/fonts/Oxanium-SemiBold.ttf",
+      "git_blob_sha": "8fcccb606a788ed6d33aab4ed452ef9ed86f5823",
+      "sha256": "e2d77ec4ee67b0152166adf5d6393360550a012c2066e0d4589053e14a733cdc",
+      "bytes": 28892,
+      "license": "OFL-1.1"
+    }
+  ]
+}
