@@ -31,6 +31,11 @@ drawn above the cover. Nearby albums recede along a diagonal, selection lifts th
 case, and a spring transition moves between albums. Horizontal swipes, taps, visible
 previous/next buttons, and accessibility actions all update the same selected album.
 
+The native panorama mode reuses this sprite and cover mapping in a responsive multi-row
+collection. It adds touch zoom/pan, animated focus, and an action card above the selected
+case. The layout reflows with the available window size; these Android interactions do
+not import or claim to reproduce additional upstream inspection frames.
+
 The included metadata also describes upstream hero/inspection renders. Those image
 sequences are not bundled in this first Android implementation; the code reads only
 the `array` and `array_res` entries. The selection animation is native and does not
@@ -39,7 +44,8 @@ claim to include RhinE's entire 60-frame front-facing inspection sequence.
 ## Memory and file access
 
 - The case image is decoded once for a mounted shelf.
-- Only covers near the selected album are requested.
+- The close shelf requests nearby covers; the panorama requests covers around its visible
+  viewport, so dragging through a large library does not decode the entire collection.
 - Cover decoding is on `Dispatchers.IO`, with a maximum decoded dimension of 512 px.
 - The in-memory cover cache is capped at 8 MiB.
 - Cover paths must resolve inside the application's private files or cache directory.

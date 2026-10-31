@@ -17,8 +17,6 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -48,6 +46,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -80,6 +79,11 @@ fun ArchiveShelf(
     selectedAlbumId: String?,
     onSelect: (Album) -> Unit,
     modifier: Modifier = Modifier,
+    panorama: Boolean = false,
+    onPanoramaChange: (Boolean) -> Unit = {},
+    onPlay: () -> Unit = {},
+    onOpen: () -> Unit = {},
+    canPlay: Boolean = false,
 ) {
     val context = LocalContext.current.applicationContext
     val density = LocalDensity.current
@@ -115,6 +119,23 @@ fun ArchiveShelf(
     val asset by produceState<CaseAsset?>(null, context) {
         value = withContext(Dispatchers.IO) { readCaseAsset(context) }
     }
+    if (panorama) {
+        PanoramaShelf(
+            albums = albums,
+            selectedAlbumId = selectedAlbumId,
+            onSelect = onSelect,
+            onExit = { onPanoramaChange(false) },
+            onPlay = onPlay,
+            onOpen = onOpen,
+            canPlay = canPlay,
+            asset = asset,
+            painter = painter,
+            coverCache = coverCache,
+            sceneColors = sceneColors,
+            modifier = modifier,
+        )
+        return
+    }
     val nearbyPaths = remember(albums, selectedIndex) {
         albums.subList((selectedIndex - 5).coerceAtLeast(0), (selectedIndex + 6).coerceAtMost(albums.size))
             .mapNotNull { it.artworkPath }.distinct()
@@ -143,7 +164,7 @@ fun ArchiveShelf(
         Column(modifier = Modifier.fillMaxWidth().height(shelfHeight)) {
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 Canvas(
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().testTag("archive-shelf")
                         .semantics {
                             contentDescription = "专辑档案架，左右滑动切换专辑"
                             stateDescription = albums.getOrNull(selectedIndex)?.let {
@@ -154,26 +175,17 @@ fun ArchiveShelf(
                                 CustomAccessibilityAction("下一张专辑") { selectRelative(1) },
                             )
                         }
-                        .pointerInput(albums, selectedAlbumId) {
-                            detectTapGestures { point ->
-                                hitStore.items.asReversed().firstOrNull { it.contains(point) }
-                                    ?.let { hit -> albums.firstOrNull { it.id == hit.albumId }?.let(onSelect) }
-                            }
-                        }
                         .pointerInput(albums, selectedAlbumId, dragThreshold) {
-                            detectHorizontalDragGestures(
-                                onDragStart = { dragDistance = 0f },
-                                onDragEnd = {
-                                    if (abs(dragDistance) >= dragThreshold) {
-                                        selectRelative(if (dragDistance < 0f) 1 else -1)
-                                    }
-                                    dragDistance = 0f
+                            detectArchiveNavigation(
+                                dragThreshold = dragThreshold,
+                                onTap = { point ->
+                                    hitStore.items.asReversed().firstOrNull { it.contains(point) }
+                                        ?.let { hit -> albums.firstOrNull { it.id == hit.albumId }?.let(onSelect) }
                                 },
-                                onDragCancel = { dragDistance = 0f },
-                            ) { change, amount ->
-                                change.consume()
-                                dragDistance = (dragDistance + amount).coerceIn(-4 * dragThreshold, 4 * dragThreshold)
-                            }
+                                onDrag = { dragDistance = it.coerceIn(-4 * dragThreshold, 4 * dragThreshold) },
+                                onSwipe = { selectRelative(it) },
+                                onPanorama = { onPanoramaChange(true) },
+                            )
                         },
                 ) {
                     drawIntoCanvas { canvas ->
@@ -233,7 +245,7 @@ fun ArchiveShelf(
     }
 }
 
-private data class CaseAsset(val bitmap: Bitmap, val coverQuad: FloatArray, val logicalSize: Float)
+internal data class CaseAsset(val bitmap: Bitmap, val coverQuad: FloatArray, val logicalSize: Float)
 
 private fun readCaseAsset(context: Context): CaseAsset? = runCatching {
     val metadata = context.assets.open("rhine/marble/case.json").bufferedReader().use { JSONObject(it.readText()) }
@@ -244,23 +256,23 @@ private fun readCaseAsset(context: Context): CaseAsset? = runCatching {
     CaseAsset(bitmap, points, metadata.getJSONArray("array_res").getDouble(0).toFloat())
 }.getOrNull()
 
-private fun readCover(context: Context, path: String, cache: LruCache<String, Bitmap>): Bitmap? = runCatching {
+internal fun readCover(context: Context, path: String, cache: LruCache<String, Bitmap>, maxSize: Int = 512): Bitmap? = runCatching {
     val file = File(path).canonicalFile
     val allowedRoots = listOf(context.filesDir.canonicalFile, context.cacheDir.canonicalFile)
     if (!file.isFile || allowedRoots.none { file.path.startsWith(it.path + File.separator) }) return@runCatching null
-    val key = "${file.path}:${file.length()}:${file.lastModified()}"
+    val key = "${file.path}:${file.length()}:${file.lastModified()}:$maxSize"
     cache.get(key)?.let { return@runCatching it }
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(file.path, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
     val options = BitmapFactory.Options().apply { inSampleSize = 1 }
-    while (maxOf(bounds.outWidth, bounds.outHeight) / options.inSampleSize > 512) options.inSampleSize *= 2
+    while (maxOf(bounds.outWidth, bounds.outHeight) / options.inSampleSize > maxSize) options.inSampleSize *= 2
     BitmapFactory.decodeFile(file.path, options)?.also { cache.put(key, it) }
 }.getOrNull()
 
-private class ShelfHitStore { var items: List<ShelfHit> = emptyList() }
+internal class ShelfHitStore { var items: List<ShelfHit> = emptyList() }
 
-private data class ShelfColors(
+internal data class ShelfColors(
     val background: Int,
     val grid: Int,
     val border: Int,
@@ -268,7 +280,7 @@ private data class ShelfColors(
     val accent: Int,
 )
 
-private data class ShelfHit(val albumId: String, val quad: FloatArray) {
+internal data class ShelfHit(val albumId: String, val quad: FloatArray) {
     fun contains(point: Offset): Boolean {
         var positive = false
         var negative = false
@@ -284,7 +296,7 @@ private data class ShelfHit(val albumId: String, val quad: FloatArray) {
     }
 }
 
-private class ShelfPainter {
+internal class ShelfPainter {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
@@ -296,6 +308,22 @@ private class ShelfPainter {
         intArrayOf(0xFFAD8559.toInt(), 0xFFE1D6BD.toInt()),
         intArrayOf(0xFF516B8A.toInt(), 0xFFC6D4DA.toInt()),
     )
+
+    private fun drawBackground(canvas: AndroidCanvas, width: Float, height: Float, density: Float, colors: ShelfColors) {
+        canvas.drawColor(colors.background)
+        line.color = colors.grid
+        line.strokeWidth = 0.5f * density
+        val gridStep = 56f * density
+        val lines = ceil((width + height * 2.1f) / gridStep).toInt()
+        for (i in -lines..lines) {
+            val x = i * gridStep
+            canvas.drawLine(x, height, x + height * 1.1f, 0f, line)
+            canvas.drawLine(x, 0f, x + height * 2.1f, height, line)
+        }
+        line.color = colors.border
+        line.strokeWidth = density
+        canvas.drawLine(0f, height - density, width, height - density, line)
+    }
 
     fun draw(
         canvas: AndroidCanvas,
@@ -312,18 +340,7 @@ private class ShelfPainter {
     ) {
         val clip = canvas.save()
         canvas.clipRect(0f, 0f, width, height)
-        canvas.drawColor(colors.background)
-        line.color = colors.grid
-        line.strokeWidth = 0.5f * density
-        val gridStep = 56f * density
-        for (i in -10..20) {
-            val x = i * gridStep
-            canvas.drawLine(x, height, x + height * 1.1f, 0f, line)
-            canvas.drawLine(x, 0f, x + height * 2.1f, height, line)
-        }
-        line.color = colors.border
-        line.strokeWidth = density
-        canvas.drawLine(0f, height - density, width, height - density, line)
+        drawBackground(canvas, width, height, density, colors)
 
         val spriteSize = min(width * 0.96f, height * 1.13f)
         val baseX = (width - spriteSize) * 0.5f + dragOffset
@@ -360,7 +377,47 @@ private class ShelfPainter {
         canvas.restoreToCount(clip)
     }
 
-    private fun drawCase(canvas: AndroidCanvas, asset: CaseAsset?, album: Album?, cover: Bitmap?, alpha: Int, focus: Float, index: Int, accentColor: Int) {
+    fun drawPanorama(
+        canvas: AndroidCanvas,
+        layout: PanoramaLayout,
+        albums: List<Album>,
+        placements: List<PanoramaPlacement>,
+        selectedAlbumId: String?,
+        asset: CaseAsset?,
+        covers: Map<String, Bitmap>,
+        colors: ShelfColors,
+    ) {
+        val clip = canvas.save()
+        canvas.clipRect(0f, 0f, layout.width, layout.height)
+        drawBackground(canvas, layout.width, layout.height, layout.density, colors)
+        canvas.clipRect(0f, layout.viewport.top, layout.width, layout.viewport.bottom)
+        for (item in placements) {
+            val album = albums[item.index]
+            val bounds = item.caseBounds
+            if (bounds.right < 0f || bounds.left > layout.width || bounds.bottom < layout.viewport.top || bounds.top > layout.viewport.bottom) continue
+            val selected = album.id == selectedAlbumId
+            line.color = colors.border
+            line.strokeWidth = layout.density * .7f
+            val shelfY = bounds.bottom + 6f * layout.density
+            canvas.drawLine(bounds.left - 7f * layout.density, shelfY, bounds.right + 7f * layout.density, shelfY, line)
+            val saved = canvas.save()
+            canvas.translate(item.x, item.y)
+            val scale = item.size / (asset?.logicalSize ?: 600f)
+            canvas.scale(scale, scale)
+            drawCase(canvas, asset, album, album.artworkPath?.let(covers::get), 255, if (selected) 1f else 0f, item.index, colors.accent, frosted = false)
+            canvas.restoreToCount(saved)
+            text.typeface = Typeface.create("monospace", Typeface.NORMAL)
+            text.textSize = 9f * layout.density
+            text.color = if (selected) colors.accent else colors.registration
+            val label = "${(item.index + 1).toString().padStart(2, '0')} / ${album.title.replace('\n', ' ')}"
+            val limit = bounds.width.coerceAtLeast(1f)
+            val length = text.breakText(label, true, limit, null)
+            canvas.drawText(label.take(length), bounds.left, shelfY + 12f * layout.density, text)
+        }
+        canvas.restoreToCount(clip)
+    }
+
+    private fun drawCase(canvas: AndroidCanvas, asset: CaseAsset?, album: Album?, cover: Bitmap?, alpha: Int, focus: Float, index: Int, accentColor: Int, frosted: Boolean = true) {
         val quad = asset?.coverQuad ?: floatArrayOf(148.6f, 136.66f, 369.09f, 239.25f, 369.09f, 448.34f, 148.6f, 345.74f)
         val crop = cover?.let { min(it.width, it.height).toFloat() } ?: 512f
         val left = cover?.let { (it.width - crop) * 0.5f } ?: 0f
@@ -393,7 +450,7 @@ private class ShelfPainter {
             canvas.drawText("LOCAL AUDIO ARCHIVE", 33f, 475f, text)
         }
         canvas.restoreToCount(saved)
-        if (focus < 0.98f) {
+        if (frosted && focus < 0.98f) {
             polygon(quad)
             paint.color = AndroidColor.argb(((1f - focus) * 170f).toInt(), 237, 238, 232)
             canvas.drawPath(path, paint)

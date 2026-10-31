@@ -3,6 +3,7 @@
 package io.github.alicejump.rhine.ui
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -60,6 +61,24 @@ private val DemoAlbums = listOf(
     "SOFT MACHINES" to "SIGNAL STUDIES",
     "NIGHT GARDEN" to "BOTANICAL AUDIO",
     "GLASS MEMORY" to "COLLECTED SOUNDS",
+    "TIDAL NOTES" to "FIELD RECORDINGS",
+    "SLOW MORNING" to "LISTENING ROOM",
+    "DUST AND LIGHT" to "ARCHIVE SERIES",
+    "OPEN CIRCUIT" to "SIGNAL STUDIES",
+    "FERN STUDY" to "BOTANICAL AUDIO",
+    "PAPER SKY" to "COLLECTED SOUNDS",
+    "DISTANT SHORE" to "FIELD RECORDINGS",
+    "SMALL HOURS" to "LISTENING ROOM",
+    "SILVER LINE" to "ARCHIVE SERIES",
+    "WARM STATIC" to "SIGNAL STUDIES",
+    "MOSS ATLAS" to "BOTANICAL AUDIO",
+    "STILL WATER" to "COLLECTED SOUNDS",
+    "RAIN WINDOW" to "FIELD RECORDINGS",
+    "LOW SUN" to "LISTENING ROOM",
+    "ANOTHER SEASON" to "ARCHIVE SERIES",
+    "SOFT FREQUENCY" to "SIGNAL STUDIES",
+    "SEED ARCHIVE" to "BOTANICAL AUDIO",
+    "BLUE DISTANCE" to "COLLECTED SOUNDS",
 ).mapIndexed { index, (title, artist) ->
     Album(id = "demo-$index", title = title, artist = artist, tracks = emptyList(), artworkPath = null)
 }
@@ -72,6 +91,7 @@ private enum class View(val label: String, val code: String) {
 fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
     var view by rememberSaveable { mutableStateOf(View.Archive) }
     var demoSelection by rememberSaveable { mutableStateOf(DemoAlbums.first().id) }
+    var panorama by rememberSaveable { mutableStateOf(false) }
     var showAlbum by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     val library = model.albums.ifEmpty { DemoAlbums }
@@ -81,23 +101,29 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val configuration = LocalConfiguration.current
     val compactLandscape = configuration.screenWidthDp >= 600 && configuration.screenHeightDp < 500
+    val activePanorama = panorama && view == View.Archive
+    val openPlayer = { panorama = false; view = View.Playing }
+
+    BackHandler(enabled = activePanorama && !showAlbum) { panorama = false }
 
     Scaffold(
         containerColor = colors.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
             Column(Modifier.windowInsetsPadding(WindowInsets.navigationBars).background(colors.background)) {
-                if (compactLandscape) {
+                if (activePanorama) {
+                    MiniPlayer(model, onOpen = openPlayer, compact = true)
+                } else if (compactLandscape) {
                     HorizontalDivider(color = colors.outline.copy(alpha = .3f))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            MiniPlayer(model, onOpen = { view = View.Playing }, compact = true)
+                            MiniPlayer(model, onOpen = openPlayer, compact = true)
                         }
                         VerticalDivider(Modifier.height(40.dp), color = colors.outline.copy(alpha = .25f))
                         NavigationTabs(view, { view = it }, Modifier.weight(1f), compact = true)
                     }
                 } else {
-                    MiniPlayer(model, onOpen = { view = View.Playing })
+                    MiniPlayer(model, onOpen = openPlayer)
                     HorizontalDivider(color = colors.outline.copy(alpha = .25f))
                     NavigationTabs(view, { view = it })
                 }
@@ -105,7 +131,7 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Header(onChooseFolder, canImport = canImport, compact = compactLandscape)
+            if (!activePanorama) Header(onChooseFolder, canImport = canImport, compact = compactLandscape)
             if (model.scanning) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -132,6 +158,9 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
                         onOpen = { showAlbum = true },
                         canImport = canImport,
                         compact = compactLandscape,
+                        panorama = activePanorama,
+                        onPanoramaChange = { panorama = it },
+                        canPlay = realLibrary && model.playback.connected,
                     )
                     View.Tracks -> TrackPage(model.tracks, model.playback.trackId, model::playTrack, onChooseFolder, canImport)
                     View.Playing -> PlayingPage(model, onChooseFolder, canImport)
@@ -214,14 +243,24 @@ private fun Header(onChooseFolder: () -> Unit, canImport: Boolean, compact: Bool
 private fun ArchivePage(
     albums: List<Album>, selected: Album, demo: Boolean, onSelect: (Album) -> Unit,
     onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean, compact: Boolean,
+    panorama: Boolean, onPanoramaChange: (Boolean) -> Unit, canPlay: Boolean,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
-        if (wide) {
+        if (panorama) {
+            ArchiveShelf(
+                albums, selected.id, onSelect, Modifier.fillMaxSize(),
+                panorama = true, onPanoramaChange = onPanoramaChange,
+                onPlay = onPlay, onOpen = onOpen, canPlay = canPlay,
+            )
+        } else if (wide) {
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.weight(1.5f).fillMaxHeight()) {
-                    ShelfLabel(demo, albums.size, compact)
-                    ArchiveShelf(albums, selected.id, onSelect, Modifier.fillMaxWidth().weight(1f))
+                    ShelfLabel(demo, albums.size, compact, onPanorama = { onPanoramaChange(true) })
+                    ArchiveShelf(
+                        albums, selected.id, onSelect, Modifier.fillMaxWidth().weight(1f),
+                        onPanoramaChange = onPanoramaChange,
+                    )
                 }
                 Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(if (compact) 16.dp else 24.dp)) {
                     AlbumFile(selected, albums.indexOf(selected), demo, onPlay, onOpen, canImport, compact)
@@ -229,8 +268,11 @@ private fun ArchivePage(
             }
         } else {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                ShelfLabel(demo, albums.size)
-                ArchiveShelf(albums, selected.id, onSelect, Modifier.fillMaxWidth().height(330.dp))
+                ShelfLabel(demo, albums.size, onPanorama = { onPanoramaChange(true) })
+                ArchiveShelf(
+                    albums, selected.id, onSelect, Modifier.fillMaxWidth().height(330.dp),
+                    onPanoramaChange = onPanoramaChange,
+                )
                 Column(Modifier.padding(horizontal = 24.dp)) {
                     AlbumFile(selected, albums.indexOf(selected), demo, onPlay, onOpen, canImport)
                     Spacer(Modifier.height(28.dp))
@@ -241,10 +283,15 @@ private fun ArchivePage(
 }
 
 @Composable
-private fun ShelfLabel(demo: Boolean, count: Int, compact: Boolean = false) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = if (compact) 8.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun ShelfLabel(demo: Boolean, count: Int, compact: Boolean = false, onPanorama: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = if (compact) 0.dp else 4.dp, bottom = if (compact) 0.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Eyebrow(if (demo) "DEMO ARCHIVE / 示例档案" else "LOCAL COLLECTION / 本地馆藏", Modifier.weight(1f))
-        Text(String.format(Locale.ROOT, "%02d", count) + " ALBUMS", fontSize = 10.sp, fontFamily = ArchiveFont)
+        Text(String.format(Locale.ROOT, "%02d", count), fontSize = 10.sp, fontFamily = ArchiveFont)
+        TextButton(onClick = onPanorama, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)) {
+            Icon(Icons.Default.ZoomOutMap, null, Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("全景浏览", fontSize = 11.sp)
+        }
     }
 }
 
