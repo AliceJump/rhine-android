@@ -27,7 +27,7 @@ class ShelfMotionGeometryTest {
             assertEquals(expected, item)
         }
         for (item in full.items) {
-            val expected = layout.placement(item.index, camera)
+            val expected = ShelfMotionGeometry.panoramaPose(item.index, layout, camera, 3f)
             assertEquals(expected.x, item.x, .002f)
             assertEquals(expected.y, item.y, .002f)
             assertEquals(expected.size, item.size, .002f)
@@ -36,7 +36,7 @@ class ShelfMotionGeometryTest {
 
     @Test
     fun halfwayMovesIndividualAlbumsInsteadOfTransformingTheWholeShelf() {
-        val indices = listOf(layout.columns - 1, layout.columns, layout.columns + 1)
+        val indices = listOf(layout.slotsPerLane - 1, layout.slotsPerLane, layout.slotsPerLane + 1)
         val near = frame(0f, position = 0f, selectionFocus = 0f)
         val middle = frame(.5f, position = 0f, selectionFocus = 0f)
         val full = frame(1f, position = 0f, selectionFocus = 0f)
@@ -145,17 +145,19 @@ class ShelfMotionGeometryTest {
     }
 
     @Test
-    fun panoramaLiftCanBeReversedAndSharedBetweenOldAndNewSelection() {
-        fun lifted(amount: Float) = ShelfMotionGeometry.frame(96, normal, layout, camera,
-            position = 5f, selectionFocus = 5.5f, progress = 1f, focusedIndex = 6, focusAmount = amount)
+    fun physicalLiftFollowsSelectionWeightsAndNotTheActionCard() {
+        fun lifted(amount: Float, card: Float = 0f) = ShelfMotionGeometry.frame(96, normal, layout, camera,
+            position = 5f, selectionFocus = 5f, progress = 1f, focusedIndex = 5, focusAmount = card,
+            selectionWeights = mapOf(5 to amount))
         val down = lifted(0f)
         val half = lifted(.5f)
         val up = lifted(1f)
+        assertEquals(up.items, lifted(1f, 1f).items)
         for (index in listOf(5, 6)) {
             val a = down.items.first { it.index == index }
             val b = half.items.first { it.index == index }
             val c = up.items.first { it.index == index }
-            assertEquals(3.5f, a.y - c.y, .002f)
+            assertTrue(a.y > c.y)
             assertEquals((a.y + c.y) / 2f, b.y, .002f)
         }
     }
@@ -209,5 +211,97 @@ class ShelfMotionGeometryTest {
         val scene = ShelfMotionGeometry.frame(0, normal, empty, empty.overviewCamera(), 0f, 0f, .5f)
         assertTrue(scene.items.isEmpty())
         assertNull(scene.hitTest(195f, 350f))
+    }
+
+    @Test
+    fun explicitEmptySelectionLowersAndFrostsEveryAlbumInBothModes() {
+        for (progress in listOf(0f, .5f, 1f)) {
+            val scene = ShelfMotionGeometry.frame(96, normal, layout, camera,
+                position = 0f, selectionFocus = 0f, progress = progress, focusedIndex = 0,
+                focusAmount = 1f, selectionWeights = emptyMap())
+            assertTrue(scene.items.all { it.focus == 0f && it.frost == 1f })
+        }
+        val selected = ShelfMotionGeometry.panoramaPose(0, layout, camera, 0f, mapOf(0 to 1f))
+        val resting = ShelfMotionGeometry.panoramaPose(0, layout, camera, 0f, emptyMap())
+        assertTrue(resting.caseBounds.centerY > selected.caseBounds.centerY + 40f)
+    }
+
+    @Test
+    fun selectedCasesKeepTheirPhysicalDepthAndOnlyTheirOwnLaneMakesRoom() {
+        val resting = ShelfMotionGeometry.panoramaPose(7, layout, camera, 7f, emptyMap())
+        val raised = ShelfMotionGeometry.panoramaPose(7, layout, camera, 7f, mapOf(7 to 1f))
+        assertEquals(resting.depth, raised.depth, 0f)
+        assertTrue(raised.y < resting.y)
+        val adjacentLane = ShelfMotionGeometry.panoramaPose(8, layout, camera, 7f, emptyMap())
+        assertEquals(adjacentLane, ShelfMotionGeometry.panoramaPose(8, layout, camera, 7f, mapOf(7 to 1f)))
+        assertTrue(adjacentLane.depth > raised.depth)
+        val neighbour = ShelfMotionGeometry.panoramaPose(6, layout, camera, 7f, mapOf(7 to 1f))
+        val neighbourAtRest = ShelfMotionGeometry.panoramaPose(6, layout, camera, 7f, emptyMap())
+        assertTrue(neighbour.y < neighbourAtRest.y)
+        assertEquals(0f, neighbour.focus, 0f)
+    }
+
+    @Test
+    fun denseRackSemanticsUseOnlyExposedSpinesAndClicksRespectTheFrontCase() {
+        val room = PanoramaLayout.create(1280f, 780f, 1f, 24)
+        val scene = ShelfMotionGeometry.frame(24, normal, room, room.overviewCamera(),
+            position = 3f, selectionFocus = -1f, progress = 1f, selectionWeights = emptyMap())
+        val front = scene.items.first { it.index == 0 }
+        val behind = scene.items.first { it.index == 1 }
+        val point = front.caseBounds
+        assertTrue(behind.contains(point.centerX, point.centerY))
+        assertEquals(0, scene.hitTest(point.centerX, point.centerY)?.index)
+        var exposedBackSpines = 0
+        for (item in scene.items) {
+            val bounds = scene.visibleBounds(item.index) ?: continue
+            assertEquals(item.index, scene.hitTest(bounds.centerX, bounds.centerY)?.index)
+            if (room.slotOf(item.index) > 0 && bounds.height < item.accessibleBounds.height) exposedBackSpines++
+        }
+        assertTrue(exposedBackSpines >= 6)
+        val blank = scene.backgroundPoint()
+        assertTrue(blank != null)
+        assertNull(scene.hitTest(blank!!.x, blank.y))
+        assertEquals(3, scene.rails.size)
+    }
+
+    @Test
+    fun opaqueRackLipsBlockRealLoweredCasesAndTheirSemanticBounds() {
+        val room = PanoramaLayout.create(1280f, 780f, 1f, 24)
+        for ((selection, worldPoint) in listOf(
+            3 to PanoramaPoint(166.458f, 443.136f),
+            4 to PanoramaPoint(148.258f, 436.425f),
+        )) {
+            val camera = room.overviewCamera(selection).copy(zoom = 1f)
+            val scene = ShelfMotionGeometry.frame(24, normal, room, camera,
+                position = selection.toFloat(), selectionFocus = selection.toFloat(), progress = 1f,
+                selectionWeights = mapOf(selection to 1f))
+            val point = room.projectPoint(worldPoint, camera)
+            val case = scene.items.first { it.index == 0 }
+            val lip = scene.rails.first { it.lane == 0 }
+            assertTrue(case.contains(point.x, point.y))
+            assertTrue(MarbleCaseGeometry.contains(lip.frontLip, point.x, point.y))
+            assertEquals(0, scene.copy(rails = emptyList()).hitTest(point.x, point.y)?.index)
+            assertNull(scene.hitTest(point.x, point.y))
+
+            // The old broad face rectangle reaches into the painted front lip; the new
+            // exposed target must avoid the entire overlap, not merely have a safe center.
+            assertTrue(MarbleCaseGeometry.intersects(lip.frontLip, case.accessibleBounds))
+            val visible = scene.visibleBounds(0)
+            assertTrue(visible != null)
+            assertFalse(MarbleCaseGeometry.intersects(lip.frontLip, visible!!))
+            assertEquals(0, scene.hitTest(visible.centerX, visible.centerY)?.index)
+
+            val sameDepth = scene.copy(rails = scene.rails.map {
+                if (it.lane == 0) it.copy(depth = case.depth) else it
+            })
+            assertNull(sameDepth.hitTest(point.x, point.y)) // Equal-depth lip is drawn last.
+            assertFalse(MarbleCaseGeometry.intersects(lip.frontLip, sameDepth.visibleBounds(0)!!))
+            val faded = scene.copy(rails = scene.rails.map { it.copy(alpha = .05f) })
+            assertEquals(0, faded.hitTest(point.x, point.y)?.index)
+            val caseInFront = scene.copy(items = scene.items.map {
+                if (it.index == 0) it.copy(depth = lip.depth + 1f) else it
+            }.sortedBy { it.depth })
+            assertEquals(0, caseInFront.hitTest(point.x, point.y)?.index)
+        }
     }
 }

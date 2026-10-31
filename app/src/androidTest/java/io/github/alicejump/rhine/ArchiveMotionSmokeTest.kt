@@ -4,7 +4,6 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsActions
-import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -27,6 +26,7 @@ import kotlin.math.abs
 class ArchiveMotionSmokeTest {
     @get:Rule
     val compose = createAndroidComposeRule<MainActivity>()
+    private val shelf get() = ArchiveSceneProbe(compose)
 
     @Test
     fun albumEntitiesMoveContinuouslyAndCanReverseBeforeExpansionFinishes() {
@@ -43,27 +43,34 @@ class ArchiveMotionSmokeTest {
                     }.getOrDefault(false)
                 }
                 compose.waitForIdle()
+                shelf.assertSelected("")
                 val sceneId = scene().id
                 val albumId = album("demo-0").id
-                val normal = album("demo-0").boundsInRoot
                 compose.mainClock.autoAdvance = false
+                compose.onNodeWithTag("archive-album-demo-0", useUnmergedTree = true)
+                    .performSemanticsAction(SemanticsActions.OnClick)
+                settle()
+                shelf.assertSelected("demo-0")
+                assertEquals(1f, shelf.focus("demo-0"), .01f)
+                val normal = shelf.caseBounds("demo-0")
 
                 compose.onNodeWithText("全景浏览").performClick()
                 advanceUntil("Entering panorama must have an intermediate state") { expansion() in 0.25f..0.75f }
-                val entering = album("demo-0").boundsInRoot
+                val entering = shelf.caseBounds("demo-0")
                 assertEquals("Expansion must retain the scene", sceneId, scene().id)
                 assertEquals("The same album entity must survive expansion", albumId, album("demo-0").id)
+                assertEquals("The selected case must stay raised while entering", 1f, shelf.focus("demo-0"), .01f)
                 assertTrue("The album must move or resize before expansion finishes", materiallyDifferent(normal, entering))
                 SmokeScreenshots.capture("13-motion-enter-middle", compose.activity).recycle()
 
                 compose.waitForIdle()
-                val reversalOrigin = album("demo-0").boundsInRoot
+                val reversalOrigin = shelf.caseBounds("demo-0")
                 val turningPoint = expansion()
                 // Android performClick injects a timed down/up gesture. Use the public
                 // button action here so the only motion step is the frame advanced below.
                 compose.onNodeWithContentDescription("退出全景").performSemanticsAction(SemanticsActions.OnClick)
                 compose.mainClock.advanceTimeByFrame()
-                val afterReverse = album("demo-0").boundsInRoot
+                val afterReverse = shelf.caseBounds("demo-0")
                 val reversalProgress = expansion()
                 assertTrue(
                     "Reversal must retain an intermediate state (before=$turningPoint, after=$reversalProgress)",
@@ -85,37 +92,82 @@ class ArchiveMotionSmokeTest {
                 assertEquals(sceneId, scene().id)
                 assertEquals(albumId, album("demo-0").id)
 
-                val oldBeforeSelection = album("demo-0").boundsInRoot
-                val newBeforeSelection = album("demo-1").boundsInRoot
+                val oldBeforeSelection = shelf.caseBounds("demo-0")
+                val newBeforeSelection = shelf.caseBounds("demo-1")
                 val nextId = album("demo-1").id
-                compose.onNodeWithContentDescription("下一张专辑").performClick()
-                compose.mainClock.advanceTimeBy(112)
-                val oldDuringSelection = album("demo-0").boundsInRoot
-                val newDuringSelection = album("demo-1").boundsInRoot
+                compose.onNodeWithTag("archive-album-demo-1", useUnmergedTree = true)
+                    .performSemanticsAction(SemanticsActions.OnClick)
+                advanceUntil("The old selection must lower while the new one rises") {
+                    runCatching { shelf.focus("demo-0") in .05f.. .95f && shelf.focus("demo-1") in .05f.. .95f }.getOrDefault(false)
+                }
+                shelf.assertSelected("demo-1")
+                val oldDuringSelection = shelf.caseBounds("demo-0")
+                val newDuringSelection = shelf.caseBounds("demo-1")
                 assertTrue("The former selected case must yield its place", materiallyDifferent(oldBeforeSelection, oldDuringSelection))
                 assertTrue("The new selected case must move into its place", materiallyDifferent(newBeforeSelection, newDuringSelection))
                 assertEquals("Selecting a neighbour must preserve its identity", nextId, album("demo-1").id)
                 SmokeScreenshots.capture("15-motion-selection-middle", compose.activity).recycle()
                 settle()
-                assertTrue("Selection must continue after the sampled intermediate frame", materiallyDifferent(newDuringSelection, album("demo-1").boundsInRoot))
+                assertTrue("Selection must continue after the sampled intermediate frame", materiallyDifferent(newDuringSelection, shelf.caseBounds("demo-1")))
+                assertEquals(0f, shelf.focus("demo-0"), .01f)
+                assertEquals(1f, shelf.focus("demo-1"), .01f)
 
                 compose.onNodeWithText("全景浏览").performClick()
                 settle()
                 assertEquals(1f, expansion(), .001f)
+                assertEquals(1f, shelf.focus("demo-1"), .01f)
+                compose.onNodeWithContentDescription("总览").performSemanticsAction(SemanticsActions.OnClick)
+                settle()
                 compose.onNodeWithTag("archive-album-demo-5", useUnmergedTree = true).performClick()
                 settle()
                 compose.onNodeWithText("GLASS MEMORY").assertIsDisplayed()
                 val selectedId = album("demo-5").id
-                compose.onNodeWithContentDescription("退出全景").performClick()
-                advanceUntil("Returning to the shelf must animate through intermediate positions") { expansion() in 0.25f..0.75f }
-                assertEquals(selectedId, album("demo-5").id)
-                SmokeScreenshots.capture("16-motion-exit-middle", compose.activity).recycle()
+                assertEquals("Programmatic focus must not trigger automatic exit", 1f, expansion(), .001f)
+                shelf.moveSelectedTo()
+                settle()
+                // Keep both actual pointers down while sampling the gesture-driven handoff.
+                shelf.beginCenteredPinch().use { gesture ->
+                    var scale = 1f
+                    var beforeHandoff = shelf.caseBounds("demo-5")
+                    repeat(14) {
+                        if (expansion() > .95f) {
+                            beforeHandoff = shelf.caseBounds("demo-5")
+                            scale *= 1.1f
+                            gesture.moveToScale(scale)
+                            compose.mainClock.advanceTimeByFrame()
+                        }
+                    }
+                    assertTrue("User expansion must pass through a continuous handoff: " + expansion(), expansion() in .05f.. .95f)
+                    assertEquals(sceneId, scene().id)
+                    assertEquals(selectedId, album("demo-5").id)
+                    assertEquals(1f, shelf.focus("demo-5"), .01f)
+                    val duringHandoff = shelf.caseBounds("demo-5")
+                    assertTrue("Crossing the zoom gate must not teleport the case", centerDistance(beforeHandoff, duringHandoff) < maxOf(24f, beforeHandoff.width * .30f))
+                    assertTrue("Crossing the zoom gate must retain its current apparent size", duringHandoff.width / beforeHandoff.width in .65f..1.35f)
+                    SmokeScreenshots.capture("16-motion-exit-middle", compose.activity).recycle()
+                    gesture.moveToScale(3.5f)
+                    compose.mainClock.advanceTimeByFrame()
+                }
                 settle()
                 assertEquals(0f, expansion(), .001f)
                 assertEquals(sceneId, scene().id)
                 assertEquals(selectedId, album("demo-5").id)
-                assertTrue("Exiting must retain the album selected in panorama", album("demo-5").config[SemanticsProperties.Selected])
+                shelf.assertSelected("demo-5")
                 compose.onNodeWithText("GLASS MEMORY").assertExists()
+
+                compose.onNodeWithText("全景浏览").performSemanticsAction(SemanticsActions.OnClick)
+                settle()
+                assertEquals(1f, shelf.focus("demo-5"), .01f)
+                compose.onNodeWithContentDescription("总览").performSemanticsAction(SemanticsActions.OnClick)
+                settle()
+                shelf.touchBlank()
+                shelf.assertSelected("")
+                advanceUntil("Explicit blank cancellation must lower the case through an intermediate lift") {
+                    shelf.focus("demo-5") in .05f.. .95f
+                }
+                SmokeScreenshots.capture("17-motion-cancel-middle", compose.activity).recycle()
+                settle()
+                assertEquals(0f, shelf.focus("demo-5"), .01f)
             } finally {
                 compose.mainClock.autoAdvance = true
                 compose.activityRule.scenario.onActivity { it.requestedOrientation = originalOrientation }

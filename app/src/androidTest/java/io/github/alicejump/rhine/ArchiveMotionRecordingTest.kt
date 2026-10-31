@@ -2,10 +2,10 @@ package io.github.alicejump.rhine
 
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.media.MediaMetadataRetriever
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
-import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -61,28 +61,39 @@ class ArchiveMotionRecordingTest {
                 val size = if (tablet) "1280x800" else "720x1280"
                 ScreenRecording.start(label, size).use {
                     MotionTestDevice.awaitFrames(24)
-                    click("下一张专辑")
-                    MotionTestDevice.awaitFrames(48)
-                    click("下一张专辑")
-                    MotionTestDevice.awaitFrames(48)
-                    click("上一张专辑")
-                    MotionTestDevice.awaitFrames(48)
-
-                    click("全景浏览")
-                    MotionTestDevice.awaitFrames(2)
-                    // System Back is available before the sliding exit button reaches the screen.
-                    instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-                    MotionTestDevice.awaitFrames(48)
+                    // Begin with every case lowered, then explicitly select A.
+                    click("QUIET ORBIT")
+                    MotionTestDevice.awaitFrames(42)
                     click("全景浏览")
                     MotionTestDevice.awaitFrames(54)
-                    click("SOFT MACHINES")
+                    val browsing = panoramaBounds()
+                    MotionTestDevice.drag(
+                        browsing.exactCenterX(), browsing.top + browsing.height() * .72f,
+                        browsing.exactCenterX() + browsing.width() * .10f, browsing.top + browsing.height() * .66f,
+                    )
+                    MotionTestDevice.awaitFrames(30)
+                    click("总览") // Camera reset must leave A raised.
+                    MotionTestDevice.awaitFrames(42)
+                    click("GLASS MEMORY") // B rises while A lowers.
                     MotionTestDevice.awaitFrames(54)
                     awaitAction("全景专辑详情")
-                    click("退出全景")
-                    MotionTestDevice.awaitFrames(54)
+                    click("回到选中") // Public camera action: it must not itself exit panorama.
+                    MotionTestDevice.awaitFrames(36)
+                    awaitAction("退出全景")
+                    val centered = panoramaBounds()
+                    val reach = minOf(centered.width() * .40f, centered.height() * .30f)
+                    MotionTestDevice.pinch(centered.exactCenterX(), centered.exactCenterY(), reach / 3.2f, 3.2f)
                     awaitAction("全景浏览")
-                    click("下一张专辑")
+                    MotionTestDevice.awaitFrames(42)
+                    click("全景浏览") // B must still be raised when re-entering.
                     MotionTestDevice.awaitFrames(54)
+                    click("总览")
+                    MotionTestDevice.awaitFrames(36)
+                    click("取消选择")
+                    MotionTestDevice.awaitFrames(54)
+                    click("退出全景")
+                    awaitAction("全景浏览")
+                    MotionTestDevice.awaitFrames(42)
                 }
                 scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
             }
@@ -112,6 +123,21 @@ class ArchiveMotionRecordingTest {
             assertTrue("The application must accept action '$label'", node.performAction(AccessibilityNodeInfo.ACTION_CLICK))
         } finally {
             node.recycle()
+        }
+    }
+
+    private fun panoramaBounds(): Rect {
+        var node: AccessibilityNodeInfo? = null
+        MotionTestDevice.await("The visible panorama canvas must expose its real screen bounds") {
+            node = find(automation.rootInActiveWindow) {
+                it.isVisibleToUser && it.contentDescription?.toString()?.contains("唱片全景") == true
+            }
+            node != null
+        }
+        return try {
+            Rect().also { checkNotNull(node).getBoundsInScreen(it) }
+        } finally {
+            node?.recycle()
         }
     }
 

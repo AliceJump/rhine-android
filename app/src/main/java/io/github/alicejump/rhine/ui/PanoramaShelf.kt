@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,19 +38,30 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.alicejump.rhine.data.Album
+import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
+private enum class ShelfCameraIntent { Overview, Selection, Free }
+
+private val CameraSaver = listSaver<PanoramaCamera, Float>(
+    save = { listOf(it.x, it.y, it.zoom) },
+    restore = { PanoramaCamera(it[0], it[1], it[2]) },
+)
+
 /** The scene is mounted once; expansion only changes each album's pose and the surrounding chrome. */
 @Composable
 internal fun PanoramaShelf(
-    albums: List<Album>, selectedAlbumId: String?, onSelect: (Album) -> Unit,
+    albums: List<Album>, selectedAlbumId: String?, browseAnchorId: String?, onSelect: (Album) -> Unit,
+    onClearSelection: () -> Unit, onBrowseAnchor: (Album) -> Unit,
     panorama: Boolean, expansion: Float, normalScene: PanoramaRect, normalClip: PanoramaRect,
     position: Float, selectionFocus: Float, selectionWeights: Map<Int, Float>,
     onPanoramaChange: (Boolean) -> Unit, onExpansionGesture: (Float?) -> Unit,
+    gestureVersion: () -> Int,
     onNormalScroll: (Float) -> Unit, onPlay: () -> Unit, onOpen: () -> Unit, canPlay: Boolean,
     asset: CaseAsset?, painter: ShelfPainter, coverCache: LruCache<String, Bitmap>,
     sceneColors: ShelfColors, modifier: Modifier = Modifier,
@@ -57,34 +69,35 @@ internal fun PanoramaShelf(
     val context = LocalContext.current.applicationContext
     val density = LocalDensity.current
     val colors = MaterialTheme.colorScheme
-    var focusedAlbumId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showActions by rememberSaveable { mutableStateOf(false) }
+    var cameraIntent by rememberSaveable { mutableStateOf(ShelfCameraIntent.Overview) }
     var actionSize by remember { mutableStateOf(IntSize.Zero) }
     var gesturing by remember { mutableStateOf(false) }
     var dragDistance by remember { mutableFloatStateOf(0f) }
     val dragVisual by animateFloatAsState(dragDistance * .12f,
         spring(dampingRatio = 1f, stiffness = 300f), label = "archive-touch")
-    val focusAmount by animateFloatAsState(if (focusedAlbumId == null) 0f else 1f,
-        spring(dampingRatio = 1f, stiffness = 190f), label = "panorama-lift")
+    val actionOpacity by animateFloatAsState(if (showActions && selectedAlbumId != null && !gesturing) 1f else 0f,
+        tween(180), label = "panorama-card")
     val preview = albums.isNotEmpty() && albums.all { it.tracks.isEmpty() }
 
-    BoxWithConstraints(modifier.fillMaxSize().clipToBounds().testTag("archive-scene")
-        .semantics { this[ArchiveExpansionKey] = expansion }) {
+    BoxWithConstraints(modifier.fillMaxSize().clipToBounds()) {
         val width = constraints.maxWidth.toFloat()
         val height = constraints.maxHeight.toFloat()
-        val layout = remember(width, height, density.density, albums.size) {
-            PanoramaLayout.create(width, height, density.density, albums.size)
+        val projection = asset?.projection ?: ShelfProjection()
+        val layout = remember(width, height, density.density, albums.size, projection) {
+            PanoramaLayout.create(width, height, density.density, albums.size, projection)
         }
-        val selectedIndex = albums.indexOfFirst { it.id == selectedAlbumId }.coerceAtLeast(0)
-        val focusedIndex = albums.indexOfFirst { it.id == focusedAlbumId }
+        val selectedIndex = albums.indexOfFirst { it.id == selectedAlbumId }
+        val browseIndex = albums.indexOfFirst { it.id == browseAnchorId }.coerceAtLeast(0)
+        val anchorIndex = if (selectedIndex >= 0) selectedIndex else browseIndex
         val compactCard = maxHeight < 400.dp
         val maxCardHeight = min(164f * density.density, layout.viewport.height * .55f)
         val cardHeight = (actionSize.height.takeIf { it > 0 }?.toFloat()
             ?: (if (compactCard) 96f else 128f) * density.density).coerceAtMost(maxCardHeight)
-        var targetCamera by remember(layout) {
-            mutableStateOf(if (focusedIndex >= 0) layout.focusCamera(focusedIndex, cardHeight)
-                else layout.overviewCamera(selectedIndex))
+        var targetCamera by rememberSaveable(stateSaver = CameraSaver) {
+            mutableStateOf(layout.overviewCamera(anchorIndex))
         }
-        val motion = if (gesturing) snap<Float>() else tween(400, easing = FastOutSlowInEasing)
+        val motion = if (gesturing || expansion < .001f) snap<Float>() else tween(400, easing = FastOutSlowInEasing)
         val cameraX by animateFloatAsState(targetCamera.x, motion, label = "panorama-x")
         val cameraY by animateFloatAsState(targetCamera.y, motion, label = "panorama-y")
         val zoom by animateFloatAsState(targetCamera.zoom, motion, label = "panorama-zoom")
@@ -96,48 +109,125 @@ internal fun PanoramaShelf(
         val currentOnExpansion by rememberUpdatedState(onExpansionGesture)
         val currentOnScroll by rememberUpdatedState(onNormalScroll)
         val currentSelectedIndex by rememberUpdatedState(selectedIndex)
+        val currentAnchorIndex by rememberUpdatedState(anchorIndex)
+        val currentSelectionWeights by rememberUpdatedState(selectionWeights)
+        val currentOnClear by rememberUpdatedState(onClearSelection)
+        val currentOnBrowse by rememberUpdatedState(onBrowseAnchor)
+        val currentGestureVersion by rememberUpdatedState(gestureVersion)
+        val currentNormalScene by rememberUpdatedState(normalScene)
 
-        LaunchedEffect(layout, focusedAlbumId, focusedIndex, actionSize.height) {
-            if (focusedIndex >= 0) targetCamera = layout.focusCamera(focusedIndex, cardHeight)
-            else if (focusedAlbumId != null) focusedAlbumId = null
+        fun selectionCamera(index: Int): PanoramaCamera {
+            // A tap reveals the raised case and card. The user can then deliberately zoom
+            // beyond this size to return to the close shelf; a programmatic focus cannot exit.
+            val closeZoom = ShelfMotionGeometry.normalSpriteSize(normalScene) / layout.spriteSize * .78f
+            return layout.focusCamera(index, cardHeight,
+                zoomOverride = closeZoom.coerceIn(PanoramaLayout.MIN_ZOOM, layout.maxZoom))
         }
-        LaunchedEffect(expansion <= .001f, selectedIndex) {
-            if (expansion <= .001f) {
-                focusedAlbumId = null
-                targetCamera = layout.overviewCamera(selectedIndex)
+
+        LaunchedEffect(layout, selectedAlbumId, actionSize.height) {
+            if (selectedIndex < 0) showActions = false
+            targetCamera = when {
+                cameraIntent == ShelfCameraIntent.Selection && selectedIndex >= 0 && panorama && !gesturing ->
+                    selectionCamera(selectedIndex)
+                else -> layout.clamp(targetCamera)
             }
         }
+        LaunchedEffect(expansion <= .001f, panorama, selectedAlbumId, browseIndex, layout) {
+            if (expansion <= .001f && !panorama && !gesturing) {
+                targetCamera = if (selectedIndex >= 0) selectionCamera(selectedIndex)
+                    else layout.overviewCamera(browseIndex)
+            }
+        }
+        // Entry chooses a default composition once. Ordinary selection, cancelling a card,
+        // leaving panorama, and free camera gestures never clear the shared selection.
+        var wasPanorama by rememberSaveable { mutableStateOf(panorama) }
+        LaunchedEffect(panorama) {
+            if (panorama && !wasPanorama) {
+                showActions = selectedIndex >= 0
+                cameraIntent = if (selectedIndex >= 0) ShelfCameraIntent.Selection else ShelfCameraIntent.Overview
+                targetCamera = if (selectedIndex >= 0) selectionCamera(selectedIndex)
+                    else layout.overviewCamera(browseIndex)
+            }
+            wasPanorama = panorama
+        }
         fun focus(album: Album) {
-            focusedAlbumId = album.id
             currentOnSelect(album)
+            showActions = true
+            cameraIntent = ShelfCameraIntent.Selection
             val index = albums.indexOfFirst { it.id == album.id }
-            if (index >= 0) targetCamera = layout.focusCamera(index, cardHeight)
+            if (index >= 0) targetCamera = selectionCamera(index)
+        }
+        fun clearSelection() {
+            showActions = false
+            cameraIntent = ShelfCameraIntent.Free
+            targetCamera = currentCamera
+            if (currentExpansion > .999f) {
+                layout.nearestIndex(currentCamera)?.let { albums.getOrNull(it)?.let(currentOnBrowse) }
+            }
+            currentOnClear()
         }
         fun selectRelative(delta: Int): Boolean {
-            val album = albums.getOrNull(currentSelectedIndex + delta) ?: return false
-            currentOnSelect(album)
+            val album = albums.getOrNull(currentAnchorIndex + delta) ?: return false
+            if (currentExpansion > .999f) focus(album) else currentOnSelect(album)
             return true
         }
         fun overview() {
-            focusedAlbumId = null
-            targetCamera = layout.overviewCamera(selectedIndex)
+            showActions = false
+            cameraIntent = ShelfCameraIntent.Overview
+            targetCamera = layout.overviewCamera(anchorIndex)
+        }
+        fun centerSelection() {
+            val index = currentSelectedIndex
+            if (index < 0) return
+            showActions = false
+            cameraIntent = ShelfCameraIntent.Free
+            val current = currentCamera
+            val body = ShelfMotionGeometry.panoramaPose(index, layout, current, index.toFloat(),
+                mapOf(index to 1f)).caseBounds
+            targetCamera = layout.clamp(current.copy(
+                x = current.x + (body.centerX - layout.viewport.centerX) / current.zoom,
+                y = current.y + (body.centerY - layout.viewport.centerY) / current.zoom,
+            ))
+        }
+        fun changeMode(expanded: Boolean) {
+            if (!expanded && currentSelectedIndex < 0) {
+                layout.nearestIndex(currentCamera)?.let { albums.getOrNull(it)?.let(currentOnBrowse) }
+            }
+            currentOnChange(expanded)
         }
 
         val transitioning = expansion > .001f && expansion < .999f
         var retainedIndices by remember(albums, layout) { mutableStateOf(emptySet<Int>()) }
         LaunchedEffect(transitioning, panorama, targetCamera, selectedIndex) {
             retainedIndices = if (transitioning) retainedIndices + ShelfMotionGeometry.transitionIndices(
-                albums.size, position, layout, targetCamera, selectionFocus,
+                albums.size, position, layout, targetCamera, selectionFocus, selectionWeights,
             ) + layout.visibleIndices(camera) else emptySet()
         }
         val frame = ShelfMotionGeometry.frame(
             count = albums.size, normalScene = normalScene, panoramaLayout = layout,
             panoramaCamera = camera, position = position, selectionFocus = selectionFocus,
-            progress = expansion, dragOffset = dragVisual, focusedIndex = focusedIndex,
-            retainedIndices = retainedIndices, focusAmount = focusAmount,
+            progress = expansion, dragOffset = dragVisual, focusedIndex = selectedIndex,
+            retainedIndices = retainedIndices,
             selectionWeights = selectionWeights, normalClip = normalClip,
         )
         val currentFrame by rememberUpdatedState(frame)
+        val backgroundPoint = frame.backgroundPoint()
+        Box(Modifier.fillMaxSize().testTag("archive-scene").semantics {
+            this[ArchiveExpansionKey] = expansion
+            this[ArchiveSelectedAlbumKey] = selectedAlbumId.orEmpty()
+            this[ArchiveBrowseAnchorKey] = browseAnchorId.orEmpty()
+            this[ArchiveCameraZoomKey] = camera.zoom
+            this[ArchiveCameraCenterXKey] = camera.x
+            this[ArchiveCameraCenterYKey] = camera.y
+            this[ArchiveVisibleWorldWidthKey] = layout.viewport.width / camera.zoom
+            this[ArchiveVisibleWorldHeightKey] = layout.viewport.height / camera.zoom
+            this[ArchiveViewportCenterXKey] = layout.viewport.centerX
+            this[ArchiveViewportCenterYKey] = layout.viewport.centerY
+            backgroundPoint?.let {
+                this[ArchiveBlankXKey] = it.x
+                this[ArchiveBlankYKey] = it.y
+            }
+        })
         // Input occupies only the animated scene. Ordinary buttons and portrait scrolling
         // remain reachable outside it; painter and pointer positions share host coordinates.
         val inputLeft = maxOf(normalScene.left, normalClip.left)
@@ -179,24 +269,33 @@ internal fun PanoramaShelf(
                     contentDescription = if (expansion > .999f) "唱片全景，双指缩放，拖动浏览，轻点聚焦"
                         else "专辑档案架，左右滑动切换专辑，双指捏合展开"
                     stateDescription = if (expansion > .999f)
-                        "${layout.columns} 列，${albums.size} 张专辑，缩放 ${(zoom * 100).roundToInt()}%"
-                        else albums.getOrNull(selectedIndex)?.let { "${selectedIndex + 1} / ${albums.size}，${it.title}，${it.artist}" }
+                        "${layout.columns} 条架道，${albums.size} 张专辑，缩放 ${(zoom * 100).roundToInt()}%"
+                        else albums.getOrNull(anchorIndex)?.let {
+                            "${anchorIndex + 1} / ${albums.size}，${it.title}，${if (selectedIndex >= 0) "已选中" else "未选中"}"
+                        }
                             ?: "尚未导入音乐"
                     customActions = if (expansion > .999f) listOf(
                         CustomAccessibilityAction("总览") { overview(); true },
+                        CustomAccessibilityAction("回到选中") { centerSelection(); selectedIndex >= 0 },
                         CustomAccessibilityAction("下一排") {
-                            focusedAlbumId = null
-                            targetCamera = layout.clamp(targetCamera.copy(y = targetCamera.y + layout.cellHeight)); true
+                            showActions = false; cameraIntent = ShelfCameraIntent.Free
+                            targetCamera = layout.clamp(targetCamera.copy(y = targetCamera.y + layout.cellHeight))
+                            layout.nearestIndex(targetCamera)?.let { albums.getOrNull(it)?.let(currentOnBrowse) }
+                            true
                         },
                         CustomAccessibilityAction("上一排") {
-                            focusedAlbumId = null
-                            targetCamera = layout.clamp(targetCamera.copy(y = targetCamera.y - layout.cellHeight)); true
+                            showActions = false; cameraIntent = ShelfCameraIntent.Free
+                            targetCamera = layout.clamp(targetCamera.copy(y = targetCamera.y - layout.cellHeight))
+                            layout.nearestIndex(targetCamera)?.let { albums.getOrNull(it)?.let(currentOnBrowse) }
+                            true
                         },
-                        CustomAccessibilityAction("退出全景") { currentOnChange(false); true },
+                        CustomAccessibilityAction("取消选择") { clearSelection(); true },
+                        CustomAccessibilityAction("退出全景") { changeMode(false); true },
                     ) else listOf(
                         CustomAccessibilityAction("上一张专辑") { selectRelative(-1) },
                         CustomAccessibilityAction("下一张专辑") { selectRelative(1) },
-                        CustomAccessibilityAction("全景浏览") { currentOnChange(true); true },
+                        CustomAccessibilityAction("全景浏览") { changeMode(true); true },
+                        CustomAccessibilityAction("取消选择") { clearSelection(); true },
                     )
                 }
                 .pointerInput(layout, albums) {
@@ -210,25 +309,56 @@ internal fun PanoramaShelf(
                         expansion = { currentExpansion }, dragThreshold = dragThreshold,
                         onTap = { point ->
                             val global = inHost(point)
-                            currentFrame.hitTest(global.x, global.y)?.let { pose ->
-                                if (currentExpansion > .999f) focus(albums[pose.index])
-                                else if (currentExpansion < .001f) currentOnSelect(albums[pose.index])
+                            if (currentExpansion > .999f || currentExpansion < .001f) {
+                                val pose = currentFrame.hitTest(global.x, global.y)
+                                if (pose == null) clearSelection()
+                                else if (currentExpansion > .999f) focus(albums[pose.index])
+                                else currentOnSelect(albums[pose.index])
                             }
                         },
                         onDrag = { dragDistance = it }, onSwipe = { selectRelative(it) },
                         onNormalScroll = { currentOnScroll(it) },
                         onExpansion = { currentOnExpansion(it) },
-                        onExpansionEnd = { currentOnChange(it) },
+                        onExpansionEnd = { changeMode(it) },
+                        onGestureCancel = { currentOnExpansion(null) },
                         onPanoramaStart = {
                             targetCamera = currentCamera
                             gesturing = true
-                            focusedAlbumId = null
+                            cameraIntent = ShelfCameraIntent.Free
+                            showActions = false
                         },
                         onPanoramaTransform = { centroid, pan, zoomChange ->
                             val global = inHost(centroid)
                             targetCamera = layout.transform(targetCamera, global.x, global.y, pan.x, pan.y, zoomChange)
                         },
-                        onPanoramaEnd = { gesturing = false },
+                        onPanoramaEnd = {
+                            gesturing = false
+                            layout.nearestIndex(targetCamera)?.let { albums.getOrNull(it)?.let(currentOnBrowse) }
+                        },
+                        gestureVersion = { currentGestureVersion() },
+                        panoramaExitGate = exit@{ centroid, pan, zoomChange ->
+                            val index = currentSelectedIndex
+                            if (index < 0 || zoomChange <= 1f) return@exit null
+                            val weights = currentSelectionWeights
+                            val normal = ShelfMotionGeometry.normalPose(index, currentNormalScene,
+                                density.density, index.toFloat(), index.toFloat(), selectionWeights = weights)
+                            val full = ShelfMotionGeometry.panoramaPose(index, layout, targetCamera,
+                                index.toFloat(), weights)
+                            if (full.size <= 0f || normal.size <= 0f) return@exit null
+                            val required = (normal.size * .90f / full.size).coerceAtLeast(1f)
+                            val part = (ln(required) / ln(zoomChange)).coerceIn(0f, 1f)
+                            val point = inHost(centroid)
+                            val candidate = layout.transform(targetCamera, point.x, point.y,
+                                pan.x * part, pan.y * part, min(required, zoomChange))
+                            val candidatePose = ShelfMotionGeometry.panoramaPose(index, layout, candidate,
+                                index.toFloat(), weights)
+                            if (candidatePose.size + .01f < normal.size * .90f) return@exit null
+                            val body = candidatePose.caseBounds
+                            val viewport = layout.viewport
+                            if (abs(body.centerX - viewport.centerX) > viewport.width * .09f ||
+                                abs(body.centerY - viewport.centerY) > viewport.height * .09f) return@exit null
+                            PanoramaExitGate(albums[index].id, required)
+                        },
                     )
                 },
         ) {
@@ -244,9 +374,9 @@ internal fun PanoramaShelf(
         // These nodes keep the same album key during normal selection and both transitions.
         frame.items.forEach { item ->
             key(albums[item.index].id) {
-                val bounds = item.accessibleBounds
+                val bounds = frame.visibleBounds(item.index)
                 val clip = frame.clip
-                if (item.alpha > .02f && bounds.left >= clip.left && bounds.right <= clip.right &&
+                if (bounds != null && item.alpha > .02f && bounds.left >= clip.left && bounds.right <= clip.right &&
                     bounds.top >= clip.top && bounds.bottom <= clip.bottom) {
                     val album = albums[item.index]
                     Box(Modifier.offset { IntOffset(bounds.left.roundToInt(), bounds.top.roundToInt()) }
@@ -256,6 +386,13 @@ internal fun PanoramaShelf(
                             contentDescription = "${album.title}，${album.artist}"
                             role = Role.Button
                             selected = album.id == selectedAlbumId
+                            this[ArchiveAlbumFocusKey] = item.focus
+                            this[ArchiveLaneKey] = layout.laneOf(item.index)
+                            this[ArchiveSlotKey] = layout.slotOf(item.index)
+                            this[ArchiveCaseCenterXKey] = item.caseBounds.centerX
+                            this[ArchiveCaseCenterYKey] = item.caseBounds.centerY
+                            this[ArchiveCaseWidthKey] = item.caseBounds.width
+                            this[ArchiveCaseHeightKey] = item.caseBounds.height
                             onClick(label = if (expansion > .999f) "聚焦专辑" else "选择专辑") {
                                 if (expansion > .999f) focus(album)
                                 else if (expansion < .001f) currentOnSelect(album)
@@ -290,28 +427,32 @@ internal fun PanoramaShelf(
                     Column(Modifier.weight(1f)) {
                         Text("ARCHIVE / PANORAMA", fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 1,
                             overflow = TextOverflow.Ellipsis, color = colors.onSurface)
-                        Text(if (preview) "示例馆藏 · 仅供预览" else "${albums.size} 张专辑 · ${layout.columns} 列",
+                        Text(if (preview) "示例馆藏 · 仅供预览" else "${albums.size} 张专辑 · ${layout.columns} 条架道",
                             color = colors.onSurfaceVariant, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     TextButton(onClick = ::overview, enabled = expansion > .999f,
                         modifier = Modifier.semantics { contentDescription = "总览" }) { Text("总览", fontSize = 12.sp) }
-                    TextButton(onClick = { onPanoramaChange(false) }, modifier = Modifier.semantics { contentDescription = "退出全景" },
+                    TextButton(onClick = ::centerSelection, enabled = selectedIndex >= 0 && expansion > .999f,
+                        modifier = Modifier.semantics { contentDescription = "回到选中" }) { Text("定位", fontSize = 12.sp) }
+                    TextButton(onClick = ::clearSelection, enabled = selectedIndex >= 0 && expansion > .999f,
+                        modifier = Modifier.semantics { contentDescription = "取消选择" }) { Text("取消", fontSize = 12.sp) }
+                    TextButton(onClick = { changeMode(false) }, modifier = Modifier.semantics { contentDescription = "退出全景" },
                         colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface)) { Text("退出全景", fontSize = 12.sp) }
                 }
-                Text("双指缩放 · 拖动浏览 · 轻点聚焦",
+                Text("捏合浏览 · 选中居中放大可收回",
                     Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).graphicsLayer { alpha = expansion },
                     color = colors.onSurfaceVariant, fontSize = 10.sp)
-                if (focusedIndex >= 0 && expansion > .9f) {
-                    val album = albums[focusedIndex]
-                    val placement = frame.items.firstOrNull { it.index == focusedIndex }?.asPanoramaPlacement()
-                        ?: layout.placement(focusedIndex, camera)
+                if (selectedIndex >= 0 && actionOpacity > .001f && expansion > .9f) {
+                    val album = albums[selectedIndex]
+                    val placement = frame.items.firstOrNull { it.index == selectedIndex }?.asPanoramaPlacement()
+                        ?: layout.placement(selectedIndex, camera)
                     val cardWidth = min(272f * density.density, (width - 24f * density.density).coerceAtLeast(1f))
                     val bounds = layout.cardBounds(placement, cardWidth, cardHeight)
                     Surface(
                         modifier = Modifier.offset { IntOffset(bounds.left.roundToInt(), bounds.top.roundToInt()) }
                             .width(with(density) { cardWidth.toDp() })
                             .heightIn(max = with(density) { maxCardHeight.toDp() })
-                            .graphicsLayer { alpha = ((expansion - .9f) * 10f).coerceIn(0f, 1f) * focusAmount }
+                            .graphicsLayer { alpha = ((expansion - .9f) * 10f).coerceIn(0f, 1f) * actionOpacity }
                             .onSizeChanged { actionSize = it }.testTag("panorama-actions"),
                         shape = RoundedCornerShape(10.dp), color = colors.surface,
                         border = BorderStroke(1.dp, colors.primary.copy(alpha = .45f)), shadowElevation = 8.dp,

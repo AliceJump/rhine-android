@@ -11,6 +11,8 @@ import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.positionChanged
 import kotlin.math.abs
 import kotlin.math.ln
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 
 /** One gesture keeps its owner even while the same cases move into another arrangement. */
 internal suspend fun PointerInputScope.detectShelfNavigation(
@@ -26,11 +28,16 @@ internal suspend fun PointerInputScope.detectShelfNavigation(
     onPanoramaStart: () -> Unit,
     onPanoramaTransform: (centroid: Offset, pan: Offset, zoom: Float) -> Unit,
     onPanoramaEnd: () -> Unit,
+    panoramaExitGate: (centroid: Offset, pan: Offset, zoomChange: Float) -> PanoramaExitGate? = { _, _, _ -> null },
+    gestureVersion: () -> Int = { 0 },
+    onGestureCancel: () -> Unit = {},
 ) {
+    val pointerContext = currentCoroutineContext()
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         if (!acceptStart(down.position)) return@awaitEachGesture
-        val startedExpanded = expansion() >= .999f
+        val versionAtDown = gestureVersion()
+        val panoramaPinch = if (expansion() >= .999f) PanoramaPinchHandoff() else null
         var progress = expansion()
         var multiplePointers = false
         var expanding = false
@@ -38,6 +45,7 @@ internal suspend fun PointerInputScope.detectShelfNavigation(
         var vertical = false
         var transforming = false
         var cancelled = down.isConsumed
+        var completed = false
         var totalPan = Offset.Zero
         var totalZoom = 1f
         var furthest = 0f
@@ -45,6 +53,12 @@ internal suspend fun PointerInputScope.detectShelfNavigation(
         try {
             while (!cancelled) {
                 val event = awaitPointerEvent()
+                // Explicit Back/mode commands own the new target. Do not revive the old
+                // pinch on the next pointer event, or overwrite that target in finally.
+                if (gestureVersion() != versionAtDown) {
+                    cancelled = true
+                    break
+                }
                 if (!horizontal && !vertical && !expanding && !transforming && event.changes.any { it.isConsumed }) {
                     cancelled = true
                     break
@@ -57,7 +71,7 @@ internal suspend fun PointerInputScope.detectShelfNavigation(
                 totalZoom *= zoom
                 furthest = maxOf(furthest, totalPan.getDistance())
                 event.changes.firstOrNull { it.id == down.id }?.let { lastPoint = it.position }
-                if (!startedExpanded) {
+                if (panoramaPinch == null) {
                     if (multi) {
                         expanding = true
                         horizontal = false
@@ -79,27 +93,52 @@ internal suspend fun PointerInputScope.detectShelfNavigation(
                         if (horizontal || vertical) event.changes.forEach { it.consume() }
                     }
                 } else {
+                    var justStarted = false
                     if (!transforming) {
                         val zoomMotion = abs(1f - totalZoom) * event.calculateCentroidSize(useCurrent = false)
                         if (zoomMotion > viewConfiguration.touchSlop || totalPan.getDistance() > viewConfiguration.touchSlop) {
                             transforming = true
+                            justStarted = true
                             onPanoramaStart()
                         }
                     }
                     if (transforming) {
-                        if (zoom != 1f || pan != Offset.Zero) onPanoramaTransform(event.calculateCentroid(), pan, zoom)
-                        event.changes.filter { it.positionChanged() }.forEach { it.consume() }
+                        // Include the deltas accumulated before touch slop was crossed.
+                        // The handoff then divides this event without losing its first part.
+                        val transformPan = if (justStarted) totalPan else pan
+                        val transformZoom = if (justStarted) totalZoom else zoom
+                        val centroid = event.calculateCentroid()
+                        val gate = if (multi && transformZoom > 1f)
+                            panoramaExitGate(centroid, transformPan, transformZoom) else null
+                        val step = panoramaPinch.step(transformZoom, multi, gate)
+                        val cameraPan = transformPan * step.cameraPanFraction
+                        if (step.cameraZoom != 1f || cameraPan != Offset.Zero) {
+                            onPanoramaTransform(centroid, cameraPan, step.cameraZoom)
+                        }
+                        step.expansion?.let(onExpansion)
+                        if (panoramaPinch.suppressTap) event.changes.forEach { it.consume() }
+                        else event.changes.filter { it.positionChanged() }.forEach { it.consume() }
                     }
                 }
                 if (event.changes.none { it.pressed }) break
             }
-            if (!cancelled && !multiplePointers && !transforming && !vertical) {
+            if (!cancelled && !multiplePointers && !transforming && !vertical &&
+                panoramaPinch?.suppressTap != true && gestureVersion() == versionAtDown) {
                 if (horizontal && abs(totalPan.x) >= dragThreshold) onSwipe(if (totalPan.x < 0f) 1 else -1)
                 else if (!horizontal && furthest <= viewConfiguration.touchSlop) onTap(lastPoint)
             }
+            completed = !cancelled
         } finally {
             onDrag(0f)
-            if (expanding) onExpansionEnd(progress >= .35f)
+            if (gestureVersion() == versionAtDown) {
+                if (!completed || !pointerContext.isActive) {
+                    // Removing/restarting this pointerInput must release its temporary
+                    // expansion override, including a pinch begun in the ordinary shelf.
+                    // Only the UI owns the existing mode target; cancellation does not settle it.
+                    onGestureCancel()
+                } else if (expanding) onExpansionEnd(progress >= .35f)
+                else panoramaPinch?.settleExpanded()?.let(onExpansionEnd)
+            }
             if (transforming) onPanoramaEnd()
         }
     }

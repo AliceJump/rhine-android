@@ -30,10 +30,14 @@ import kotlinx.coroutines.launch
 internal fun ArchiveShelf(
     albums: List<Album>,
     selectedAlbumId: String?,
+    browseAnchorId: String?,
     onSelect: (Album) -> Unit,
+    onClearSelection: () -> Unit,
+    onBrowseAnchor: (Album) -> Unit,
     modifier: Modifier = Modifier,
     panorama: Boolean = false,
     expansion: Float = 0f,
+    gestureVersion: () -> Int = { 0 },
     normalScene: PanoramaRect,
     normalClip: PanoramaRect,
     onPanoramaChange: (Boolean) -> Unit = {},
@@ -52,10 +56,12 @@ internal fun ArchiveShelf(
         registration = colors.onSurfaceVariant.copy(alpha = .65f).toArgb(),
         accent = colors.primary.toArgb(),
     )
-    val selectedIndex = albums.indexOfFirst { it.id == selectedAlbumId }.coerceAtLeast(0)
+    val selectedIndex = albums.indexOfFirst { it.id == selectedAlbumId }
+    val anchorIndex = if (selectedIndex >= 0) selectedIndex else
+        albums.indexOfFirst { it.id == browseAnchorId }.coerceAtLeast(0)
     // The selected case lifts before the slower row follows it, as in the upstream shelf.
     // In full panorama the close pose is invisible, so prepare its new anchor immediately.
-    val position by animateFloatAsState(selectedIndex.toFloat(),
+    val position by animateFloatAsState(anchorIndex.toFloat(),
         if (expansion >= .999f) snap() else spring(dampingRatio = 1f, stiffness = 90f),
         label = "archive-row")
     val indicesById = remember(albums) { albums.mapIndexed { index, album -> album.id to index }.toMap() }
@@ -92,10 +98,12 @@ internal fun ArchiveShelf(
         value = withContext(Dispatchers.IO) { readCaseAsset(context) }
     }
     PanoramaShelf(
-        albums = albums, selectedAlbumId = selectedAlbumId, onSelect = onSelect,
+        albums = albums, selectedAlbumId = selectedAlbumId, browseAnchorId = browseAnchorId,
+        onSelect = onSelect, onClearSelection = onClearSelection, onBrowseAnchor = onBrowseAnchor,
         panorama = panorama, expansion = expansion, normalScene = normalScene, normalClip = normalClip,
         position = position, selectionFocus = selectedIndex.toFloat(), selectionWeights = selectionWeights,
         onPanoramaChange = onPanoramaChange, onExpansionGesture = onExpansionGesture,
+        gestureVersion = gestureVersion,
         onNormalScroll = onNormalScroll, onPlay = onPlay, onOpen = onOpen, canPlay = canPlay,
         asset = asset, painter = painter, coverCache = coverCache,
         sceneColors = sceneColors, modifier = modifier,
@@ -103,18 +111,23 @@ internal fun ArchiveShelf(
 }
 
 @Composable
-internal fun ArchiveShelfControls(count: Int, selectedIndex: Int, onSelectRelative: (Int) -> Unit) {
+internal fun ArchiveShelfControls(count: Int, selectedIndex: Int, onSelectRelative: (Int) -> Unit,
+    hasSelection: Boolean, onClearSelection: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
         TextButton(onClick = { onSelectRelative(-1) }, enabled = selectedIndex > 0,
             colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface),
             modifier = Modifier.semantics { contentDescription = "上一张专辑" }) { Text("←", fontSize = 23.sp) }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("${if (count == 0) "00" else (selectedIndex + 1).toString().padStart(2, '0')} / ${count.toString().padStart(2, '0')}",
                 fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = colors.onSurface)
             Text(if (count == 0) "导入音乐后显示专辑" else "滑动浏览 · 轻点选择",
                 fontSize = 10.sp, color = colors.onSurfaceVariant)
+        }
+        TextButton(onClick = onClearSelection, enabled = hasSelection,
+            modifier = Modifier.semantics { contentDescription = "取消选择" }) {
+            Text("取消", fontSize = 11.sp)
         }
         TextButton(onClick = { onSelectRelative(1) }, enabled = selectedIndex < count - 1,
             colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface),

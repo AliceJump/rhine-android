@@ -21,7 +21,8 @@ import kotlin.math.ceil
 import kotlin.math.min
 import org.json.JSONObject
 
-internal data class CaseAsset(val bitmap: Bitmap, val coverQuad: FloatArray, val logicalSize: Float)
+internal data class CaseAsset(val bitmap: Bitmap, val coverQuad: FloatArray, val logicalSize: Float,
+    val projection: ShelfProjection = ShelfProjection())
 
 internal fun readCaseAsset(context: Context): CaseAsset? = runCatching {
     val metadata = context.assets.open("rhine/marble/case.json").bufferedReader().use { JSONObject(it.readText()) }
@@ -29,7 +30,14 @@ internal fun readCaseAsset(context: Context): CaseAsset? = runCatching {
     val points = FloatArray(8) { i -> quad.getJSONArray(i / 2).getDouble(i % 2).toFloat() }
     val bitmap = context.assets.open("rhine/marble/array-clear.png").use(BitmapFactory::decodeStream)
         ?: return@runCatching null
-    CaseAsset(bitmap, points, metadata.getJSONArray("array_res").getDouble(0).toFloat())
+    val axes = metadata.getJSONObject("axes")
+    fun point(source: JSONObject, key: String): PanoramaPoint = source.getJSONArray(key).let {
+        PanoramaPoint(it.getDouble(0).toFloat(), it.getDouble(1).toFloat())
+    }
+    val logicalSize = metadata.getJSONArray("array_res").getDouble(0).toFloat()
+    val projection = ShelfProjection(point(axes, "x"), point(axes, "y"), point(axes, "z"),
+        point(metadata.getJSONObject("array"), "origin"), logicalSize)
+    CaseAsset(bitmap, points, logicalSize, projection)
 }.getOrNull()
 
 internal fun readCover(context: Context, path: String, cache: LruCache<String, Bitmap>, maxSize: Int = 512): Bitmap? = runCatching {
@@ -67,19 +75,7 @@ internal data class ShelfColors(
 )
 
 internal data class ShelfHit(val albumId: String, val quad: FloatArray) {
-    fun contains(point: Offset): Boolean {
-        var positive = false
-        var negative = false
-        for (i in 0..3) {
-            val next = (i + 1) % 4
-            val cross = (quad[next * 2] - quad[i * 2]) * (point.y - quad[i * 2 + 1]) -
-                (quad[next * 2 + 1] - quad[i * 2 + 1]) * (point.x - quad[i * 2])
-            positive = positive || cross > 0
-            negative = negative || cross < 0
-            if (positive && negative) return false
-        }
-        return true
-    }
+    fun contains(point: Offset): Boolean = MarbleCaseGeometry.contains(quad, point.x, point.y)
 }
 
 internal class ShelfPainter {
@@ -136,7 +132,12 @@ internal class ShelfPainter {
         // drawColor also respects this clip: ordinary header / inspector space stays untouched.
         drawBackground(canvas, width, height, density, colors)
         val hits = ArrayList<ShelfHit>(frame.items.size)
+        frame.rails.forEach { drawRailFloor(canvas, it, density, colors) }
+        var nextRail = 0
         for (item in frame.items) {
+            while (nextRail < frame.rails.size && frame.rails[nextRail].depth < item.depth) {
+                drawRailLip(canvas, frame.rails[nextRail++], density, colors)
+            }
             if (item.alpha <= .005f) continue
             val album = albums.getOrNull(item.index) ?: continue
             val bounds = item.caseBounds
@@ -154,20 +155,8 @@ internal class ShelfPainter {
             canvas.restoreToCount(entity)
             if (item.alpha > .1f) hits += ShelfHit(album.id, item.quad)
 
-            val decorationAlpha = frame.progress * item.alpha
-            if (decorationAlpha > .01f) {
-                line.color = withAlpha(colors.border, decorationAlpha)
-                line.strokeWidth = density * .7f
-                val shelfY = bounds.bottom + 6f * density
-                canvas.drawLine(bounds.left - 7f * density, shelfY, bounds.right + 7f * density, shelfY, line)
-                text.typeface = monospace
-                text.textSize = 9f * density
-                text.color = withAlpha(if (item.focus > .5f) colors.accent else colors.registration, decorationAlpha)
-                val label = "${(item.index + 1).toString().padStart(2, '0')} / ${album.title.replace('\n', ' ')}"
-                val length = text.breakText(label, true, bounds.width.coerceAtLeast(1f), null)
-                canvas.drawText(label.take(length), bounds.left, shelfY + 12f * density, text)
-            }
         }
+        while (nextRail < frame.rails.size) drawRailLip(canvas, frame.rails[nextRail++], density, colors)
         hitStore.items = hits
         hitStore.clip = frame.clip
         canvas.restoreToCount(saved)
@@ -177,6 +166,38 @@ internal class ShelfPainter {
         (AndroidColor.alpha(color) * opacity.coerceIn(0f, 1f)).toInt(),
         AndroidColor.red(color), AndroidColor.green(color), AndroidColor.blue(color),
     )
+
+    private fun blend(first: Int, second: Int, amount: Float) = AndroidColor.rgb(
+        (AndroidColor.red(first) * (1f - amount) + AndroidColor.red(second) * amount).toInt(),
+        (AndroidColor.green(first) * (1f - amount) + AndroidColor.green(second) * amount).toInt(),
+        (AndroidColor.blue(first) * (1f - amount) + AndroidColor.blue(second) * amount).toInt(),
+    )
+
+    private fun drawRailFloor(canvas: AndroidCanvas, rail: ShelfRailPose, density: Float, colors: ShelfColors) {
+        polygon(rail.floor)
+        paint.shader = null
+        paint.color = withAlpha(blend(colors.background, colors.registration, .13f), rail.alpha)
+        canvas.drawPath(path, paint)
+        line.color = withAlpha(colors.border, rail.alpha)
+        line.strokeWidth = density
+        canvas.drawPath(path, line)
+        line.color = withAlpha(colors.registration, rail.alpha * .22f)
+        line.strokeWidth = density * .8f
+        for (divider in rail.dividers) canvas.drawLine(divider[0], divider[1], divider[2], divider[3], line)
+    }
+
+    private fun drawRailLip(canvas: AndroidCanvas, rail: ShelfRailPose, density: Float, colors: ShelfColors) {
+        polygon(rail.frontLip)
+        paint.shader = null
+        paint.color = withAlpha(blend(colors.background, colors.registration, .28f), rail.alpha)
+        canvas.drawPath(path, paint)
+        line.color = withAlpha(colors.border, rail.alpha)
+        line.strokeWidth = density
+        canvas.drawPath(path, line)
+        line.color = withAlpha(colors.accent, rail.alpha * .55f)
+        line.strokeWidth = density * .65f
+        canvas.drawLine(rail.frontLip[0], rail.frontLip[1], rail.frontLip[2], rail.frontLip[3], line)
+    }
 
     private fun drawCase(canvas: AndroidCanvas, asset: CaseAsset?, album: Album?, cover: Bitmap?, alpha: Int, focus: Float, index: Int, accentColor: Int, frostAmount: Float = 1f - focus) {
         val quad = asset?.coverQuad ?: floatArrayOf(148.6f, 136.66f, 369.09f, 239.25f, 369.09f, 448.34f, 148.6f, 345.74f)
@@ -231,8 +252,10 @@ internal class ShelfPainter {
             canvas.rotate(25f, 151f, 112f)
             text.color = AndroidColor.argb(alpha, 49, 53, 47)
             text.typeface = sansSerif
-            text.textSize = 8f
-            canvas.drawText(album.title.replace('\n', ' ').uppercase(Locale.ROOT).take(24), 151f, 112f, text)
+            text.textSize = 12f
+            val title = album.title.replace('\n', ' ').uppercase(Locale.ROOT)
+            val length = text.breakText(title, true, 224f, null)
+            canvas.drawText(title.take(length), 151f, 112f, text)
             canvas.restoreToCount(labelState)
         }
         if (focus > 0.02f) {
@@ -246,7 +269,7 @@ internal class ShelfPainter {
     private fun polygon(points: FloatArray) {
         path.reset()
         path.moveTo(points[0], points[1])
-        for (k in 1..3) path.lineTo(points[k * 2], points[k * 2 + 1])
+        for (k in 1 until points.size / 2) path.lineTo(points[k * 2], points[k * 2 + 1])
         path.close()
     }
 

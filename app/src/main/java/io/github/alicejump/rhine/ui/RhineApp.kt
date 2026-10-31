@@ -99,14 +99,29 @@ private enum class View(val label: String, val code: String) {
 @Composable
 fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
     var view by rememberSaveable { mutableStateOf(View.Archive) }
-    var demoSelection by rememberSaveable { mutableStateOf(DemoAlbums.first().id) }
+    var demoSelection by rememberSaveable { mutableStateOf<String?>(null) }
+    var browseAnchorId by rememberSaveable { mutableStateOf<String?>(null) }
     var panorama by rememberSaveable { mutableStateOf(false) }
     var gestureExpansion by remember { mutableStateOf<Float?>(null) }
+    var gestureVersion by remember { mutableIntStateOf(0) }
     var showAlbum by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     val library = model.albums.ifEmpty { DemoAlbums }
-    val selected = library.firstOrNull { it.id == (model.selectedAlbumId ?: demoSelection) } ?: library.first()
     val realLibrary = model.albums.isNotEmpty()
+    val selected = library.firstOrNull { it.id == if (realLibrary) model.selectedAlbumId else demoSelection }
+    val browsed = library.firstOrNull { it.id == browseAnchorId } ?: selected ?: library.first()
+    LaunchedEffect(library) {
+        if (library.none { it.id == browseAnchorId }) browseAnchorId = (selected ?: library.first()).id
+        if (selected == null) showAlbum = false
+    }
+    val selectAlbum: (Album) -> Unit = {
+        browseAnchorId = it.id
+        if (realLibrary) model.selectAlbum(it) else demoSelection = it.id
+    }
+    val clearSelection: () -> Unit = {
+        if (realLibrary) model.clearAlbumSelection() else demoSelection = null
+        showAlbum = false
+    }
     val canImport = !model.scanning && !model.loading
     val colors = MaterialTheme.colorScheme
     val configuration = LocalConfiguration.current
@@ -117,8 +132,8 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
         animationSpec = if (gestureExpansion != null) snap() else tween(620, easing = FastOutSlowInEasing),
         label = "archive-expansion",
     )
-    val changePanorama: (Boolean) -> Unit = { gestureExpansion = null; panorama = it }
-    val openPlayer = { gestureExpansion = null; panorama = false; view = View.Playing }
+    val changePanorama: (Boolean) -> Unit = { gestureVersion++; gestureExpansion = null; panorama = it }
+    val openPlayer = { gestureVersion++; gestureExpansion = null; panorama = false; view = View.Playing }
 
     BackHandler(enabled = (activePanorama || expansion > .001f) && !showAlbum) { changePanorama(false) }
 
@@ -166,14 +181,17 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
             Box(Modifier.weight(1f)) {
                 when (view) {
                     View.Archive -> ArchivePage(
-                        library, selected, !realLibrary,
-                        onSelect = { if (realLibrary) model.selectAlbum(it) else demoSelection = it.id },
-                        onPlay = { if (realLibrary) model.playAlbum(selected) else onChooseFolder() },
-                        onOpen = { showAlbum = true },
+                        library, selected, browsed, !realLibrary,
+                        onSelect = selectAlbum,
+                        onClearSelection = clearSelection,
+                        onBrowseAnchor = { browseAnchorId = it.id },
+                        onPlay = { if (realLibrary) selected?.let { model.playAlbum(it) } else onChooseFolder() },
+                        onOpen = { if (selected != null) showAlbum = true },
                         canImport = canImport,
                         compact = compactLandscape,
                         panorama = activePanorama,
                         expansion = expansion,
+                        gestureVersion = { gestureVersion },
                         onPanoramaChange = changePanorama,
                         onExpansionGesture = { gestureExpansion = it },
                         canPlay = realLibrary && model.playback.connected,
@@ -188,7 +206,7 @@ fun RhineApp(model: RhineViewModel, onChooseFolder: () -> Unit) {
             }
         }
     }
-    if (showAlbum) {
+    if (showAlbum && selected != null) {
         ModalBottomSheet(onDismissRequest = { showAlbum = false }, containerColor = colors.background) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
                 Eyebrow("ALBUM FILE / 曲目档案")
@@ -260,9 +278,10 @@ private fun Header(onChooseFolder: () -> Unit, canImport: Boolean, compact: Bool
 
 @Composable
 private fun ArchivePage(
-    albums: List<Album>, selected: Album, demo: Boolean, onSelect: (Album) -> Unit,
+    albums: List<Album>, selected: Album?, browsed: Album, demo: Boolean, onSelect: (Album) -> Unit,
+    onClearSelection: () -> Unit, onBrowseAnchor: (Album) -> Unit,
     onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean, compact: Boolean,
-    panorama: Boolean, expansion: Float, onPanoramaChange: (Boolean) -> Unit,
+    panorama: Boolean, expansion: Float, gestureVersion: () -> Int, onPanoramaChange: (Boolean) -> Unit,
     onExpansionGesture: (Float?) -> Unit, canPlay: Boolean,
     onChooseFolder: () -> Unit, onNavigate: (View) -> Unit, miniPlayer: @Composable () -> Unit,
 ) {
@@ -272,7 +291,8 @@ private fun ArchivePage(
     var normalScene by remember { mutableStateOf<PanoramaRect?>(null) }
     var normalClip by remember { mutableStateOf<PanoramaRect?>(null) }
     val portraitScroll = rememberScrollState()
-    val selectedIndex = albums.indexOfFirst { it.id == selected.id }.coerceAtLeast(0)
+    val displayed = selected ?: browsed
+    val selectedIndex = albums.indexOfFirst { it.id == displayed.id }.coerceAtLeast(0)
     fun selectRelative(delta: Int) {
         albums.getOrNull(selectedIndex + delta)?.let(onSelect)
     }
@@ -303,11 +323,13 @@ private fun ArchivePage(
                         Column(Modifier.weight(1.5f).fillMaxHeight()) {
                             ShelfLabel(demo, albums.size, compact, onPanorama = { onPanoramaChange(true) })
                             Spacer(sceneSlot.weight(1f))
-                            ArchiveShelfControls(albums.size, selectedIndex, ::selectRelative)
+                            ArchiveShelfControls(albums.size, selectedIndex, ::selectRelative,
+                                hasSelection = selected != null, onClearSelection = onClearSelection)
                         }
                         Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())
                             .padding(if (compact) 16.dp else 24.dp)) {
-                            AlbumFile(selected, selectedIndex, demo, onPlay, onOpen, canImport, compact)
+                            AlbumFile(displayed, selectedIndex, demo, onPlay, onOpen, canImport, compact,
+                                selectionActive = selected != null, onSelect = { onSelect(browsed) })
                         }
                     }
                 } else {
@@ -315,10 +337,12 @@ private fun ArchivePage(
                         ShelfLabel(demo, albums.size, onPanorama = { onPanoramaChange(true) })
                         Column(Modifier.fillMaxWidth().height(330.dp)) {
                             Spacer(sceneSlot.weight(1f))
-                            ArchiveShelfControls(albums.size, selectedIndex, ::selectRelative)
+                            ArchiveShelfControls(albums.size, selectedIndex, ::selectRelative,
+                                hasSelection = selected != null, onClearSelection = onClearSelection)
                         }
                         Column(Modifier.padding(horizontal = 24.dp)) {
-                            AlbumFile(selected, selectedIndex, demo, onPlay, onOpen, canImport)
+                            AlbumFile(displayed, selectedIndex, demo, onPlay, onOpen, canImport,
+                                selectionActive = selected != null, onSelect = { onSelect(browsed) })
                             Spacer(Modifier.height(28.dp))
                         }
                     }
@@ -332,9 +356,10 @@ private fun ArchivePage(
         }
         normalScene?.let { viewport ->
             ArchiveShelf(
-                albums = albums, selectedAlbumId = selected.id, onSelect = onSelect,
+                albums = albums, selectedAlbumId = selected?.id, browseAnchorId = browsed.id,
+                onSelect = onSelect, onClearSelection = onClearSelection, onBrowseAnchor = onBrowseAnchor,
                 modifier = Modifier.fillMaxWidth().height((maxHeight - 56.dp).coerceAtLeast(1.dp)),
-                panorama = panorama, expansion = expansion,
+                panorama = panorama, expansion = expansion, gestureVersion = gestureVersion,
                 normalScene = viewport, normalClip = normalClip ?: viewport, onPanoramaChange = onPanoramaChange,
                 onExpansionGesture = onExpansionGesture,
                 onNormalScroll = { portraitScroll.dispatchRawDelta(it) },
@@ -379,7 +404,8 @@ private fun ShelfLabel(demo: Boolean, count: Int, compact: Boolean = false, onPa
 }
 
 @Composable
-private fun AlbumFile(album: Album, index: Int, demo: Boolean, onPlay: () -> Unit, onOpen: () -> Unit, canImport: Boolean, compact: Boolean = false) {
+private fun AlbumFile(album: Album, index: Int, demo: Boolean, onPlay: () -> Unit, onOpen: () -> Unit,
+    canImport: Boolean, compact: Boolean = false, selectionActive: Boolean = true, onSelect: () -> Unit = {}) {
     val colors = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Eyebrow("ARCHIVE / " + String.format(Locale.ROOT, "%04d", index + 1), Modifier.weight(1f))
@@ -413,15 +439,17 @@ private fun AlbumFile(album: Album, index: Int, demo: Boolean, onPlay: () -> Uni
         Spacer(Modifier.height(14.dp))
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(onClick = onPlay, enabled = !demo || canImport, shape = RoundedCornerShape(0.dp),
+        Button(onClick = if (demo || selectionActive) onPlay else onSelect,
+            enabled = !demo || canImport, shape = RoundedCornerShape(0.dp),
             colors = ButtonDefaults.buttonColors(containerColor = colors.onSurface, contentColor = colors.surface),
             modifier = Modifier.weight(1f).height(48.dp)) {
             Icon(if (demo) Icons.Default.Add else Icons.Default.PlayArrow, null, Modifier.size(17.dp))
             Spacer(Modifier.width(7.dp))
-            Text(if (demo) "导入音乐" else "播放专辑", fontSize = 12.sp)
+            Text(if (demo) "导入音乐" else if (selectionActive) "播放专辑" else "选中唱片", fontSize = 12.sp)
         }
-        OutlinedButton(onClick = onOpen, shape = RoundedCornerShape(0.dp), modifier = Modifier.height(48.dp)) {
-            Text("打开档案", color = colors.onSurface, fontSize = 12.sp)
+        OutlinedButton(onClick = if (selectionActive) onOpen else onSelect,
+            shape = RoundedCornerShape(0.dp), modifier = Modifier.height(48.dp)) {
+            Text(if (selectionActive) "打开档案" else "选择", color = colors.onSurface, fontSize = 12.sp)
             Spacer(Modifier.width(8.dp))
             Icon(Icons.Default.NorthEast, null, Modifier.size(15.dp))
         }
@@ -486,7 +514,8 @@ private fun MiniPlayer(model: RhineViewModel, onOpen: () -> Unit, compact: Boole
                 fontSize = 9.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 4.dp))
         }
-        IconButton(onClick = model::togglePlayback, enabled = state.connected && model.tracks.isNotEmpty()) {
+        IconButton(onClick = model::togglePlayback,
+            enabled = state.connected && (state.trackId != null || model.selectedAlbumId != null)) {
             Icon(if (state.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.playing) "暂停" else "播放")
         }
         IconButton(onClick = model::next, enabled = state.trackId != null) { Icon(Icons.Default.SkipNext, "下一首") }
@@ -530,7 +559,8 @@ private fun PlayingPage(model: RhineViewModel, onImport: () -> Unit, canImport: 
                     tint = if (state.repeat) colors.primary else colors.onSurfaceVariant)
             }
             IconButton(onClick = model::previous, enabled = state.trackId != null) { Icon(Icons.Default.SkipPrevious, "上一首", Modifier.size(30.dp)) }
-            FilledIconButton(onClick = model::togglePlayback, enabled = state.connected && model.tracks.isNotEmpty(),
+            FilledIconButton(onClick = model::togglePlayback,
+                enabled = state.connected && (state.trackId != null || model.selectedAlbumId != null),
                 modifier = Modifier.padding(horizontal = 16.dp).size(64.dp), shape = RoundedCornerShape(0.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = colors.onSurface, contentColor = colors.surface)) {
                 Icon(if (state.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.playing) "暂停播放" else "开始播放", Modifier.size(30.dp))

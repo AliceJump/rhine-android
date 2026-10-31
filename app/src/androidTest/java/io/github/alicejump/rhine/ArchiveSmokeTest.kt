@@ -11,6 +11,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.test.espresso.Espresso.pressBack
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -33,6 +35,12 @@ class ArchiveSmokeTest {
         compose.onNodeWithText("尚未播放").assertIsDisplayed()
         compose.onNodeWithContentDescription("播放").assertIsNotEnabled()
         SmokeScreenshots.capture("01-archive-light", compose.activity).recycle()
+
+        // With no selection the inspector first offers a real selection action.
+        compose.onNodeWithText("选择").performScrollTo().performClick()
+        compose.onNodeWithText("打开档案").performScrollTo().performClick()
+        compose.onNodeWithText("ALBUM FILE / 曲目档案").assertIsDisplayed()
+        pressBack()
 
         compose.onNodeWithText("02  曲目").performClick()
         compose.onNodeWithText("档案架还没有音乐").assertIsDisplayed()

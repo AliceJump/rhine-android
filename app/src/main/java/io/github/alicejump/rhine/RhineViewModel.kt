@@ -182,10 +182,11 @@ class RhineViewModel(application: Application) : AndroidViewModel(application) {
         tracks = items
         albums = groupAlbums(items)
         selectedAlbumId = selectedAlbumId?.takeIf { id -> albums.any { it.id == id } }
-            ?: albums.firstOrNull()?.id
     }
 
     fun selectAlbum(album: Album) { selectedAlbumId = album.id }
+
+    fun clearAlbumSelection() { selectedAlbumId = null }
 
     fun playAlbum(album: Album, index: Int = 0) {
         if (album.tracks.isEmpty()) {

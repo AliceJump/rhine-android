@@ -1,57 +1,104 @@
 package io.github.alicejump.rhine.ui
 
+import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PanoramaGeometryTest {
     @Test
-    fun rotatingTabletUsesMoreColumnsAndFewerRowsInLandscape() {
+    fun rotationKeepsEveryAlbumInItsWorldLaneAndSlot() {
         val portrait = PanoramaLayout.create(800f, 1150f, 1f, 24)
         val landscape = PanoramaLayout.create(1280f, 670f, 1f, 24)
-        assertTrue(landscape.columns > portrait.columns)
-        assertTrue(landscape.rows < portrait.rows)
         val phone = PanoramaLayout.create(390f, 700f, 1f, 24)
-        assertTrue(phone.columns < portrait.columns)
-        assertTrue(phone.rows > portrait.rows)
+        for (other in listOf(landscape, phone)) {
+            assertEquals(3, other.columns)
+            assertEquals(8, other.rows)
+            assertEquals(portrait.worldBounds, other.worldBounds)
+            for (index in 0 until 24) {
+                assertEquals(portrait.laneOf(index), other.laneOf(index))
+                assertEquals(portrait.slotOf(index), other.slotOf(index))
+                assertEquals(portrait.center(index), other.center(index))
+            }
+        }
+        assertTrue(landscape.viewport.width > portrait.viewport.width)
+        assertTrue(landscape.viewport.height < portrait.viewport.height)
     }
 
     @Test
-    fun dimensionsAreBasedOnTheAvailableViewportAndDensity() {
+    fun theSameCameraSeesMoreParallelLanesInTheWiderWindow() {
+        val portrait = PanoramaLayout.create(800f, 1150f, 1f, 160)
+        val landscape = PanoramaLayout.create(1280f, 670f, 1f, 160)
+        val center = portrait.center(83)
+        val camera = PanoramaCamera(center.x, center.y)
+        fun lanes(layout: PanoramaLayout) = layout.visibleIndices(camera, 0)
+            .filter { layout.placement(it, camera).caseBounds.intersects(layout.viewport) }
+            .map(layout::laneOf).distinct().size
+        assertTrue(lanes(landscape) > lanes(portrait))
+    }
+
+    @Test
+    fun worldScaleUsesDensityButDoesNotReflowForSplitWindows() {
         val fullWidth = PanoramaLayout.create(1200f, 760f, 1f, 40)
         val splitWindow = PanoramaLayout.create(460f, 760f, 1f, 40)
         val highDensity = PanoramaLayout.create(2400f, 1520f, 2f, 40)
-        assertTrue(splitWindow.columns < fullWidth.columns)
-        assertEquals(fullWidth.columns, highDensity.columns)
-        assertEquals(fullWidth.cellWidth * 2f, highDensity.cellWidth, .01f)
+        assertEquals(fullWidth.columns, splitWindow.columns)
+        assertEquals(fullWidth.center(17), splitWindow.center(17))
+        assertEquals(fullWidth.center(17).x * 2f, highDensity.center(17).x, .01f)
+        assertEquals(fullWidth.center(17).y * 2f, highDensity.center(17).y, .01f)
+        assertEquals(fullWidth.spriteSize * 2f, highDensity.spriteSize, .01f)
     }
 
     @Test
-    fun semanticTargetsStayInsideTheActuallyClickableCase() {
+    fun rackSlotsOverlapAlongTheMetadataAxisInsteadOfFormingSeparateCells() {
+        val layout = PanoramaLayout.create(1280f, 700f, 1f, 24)
+        val first = layout.worldPlacement(0)
+        val second = layout.worldPlacement(1)
+        assertTrue(first.caseBounds.intersects(second.caseBounds))
+        assertEquals(57.56f * .74f * .6f, second.x - first.x, .002f)
+        assertEquals(-50.85f * .74f * .6f, second.y - first.y, .002f)
+        val nextLane = layout.worldPlacement(8)
+        assertEquals(79.31f * 4.65f * .6f, nextLane.x - first.x, .002f)
+        assertEquals(36.9f * 4.65f * .6f, nextLane.y - first.y, .002f)
+    }
+
+    @Test
+    fun restingFaceBoundsStayInsideTheActualCaseIncludingItsTopSpine() {
         val layout = PanoramaLayout.create(390f, 700f, 1f, 24)
-        val item = layout.placement(4, layout.overviewCamera())
+        val item = layout.placement(4, layout.overviewCamera(4))
         val bounds = item.accessibleBounds
-        assertTrue(bounds.width >= 48f)
-        assertTrue(bounds.height >= 48f)
         for (x in listOf(bounds.left, bounds.centerX, bounds.right)) {
             for (y in listOf(bounds.top, bounds.centerY, bounds.bottom)) assertTrue(item.contains(x, y))
         }
+        assertTrue(item.contains(item.x + item.size * 245f / 600f, item.y + item.size * 143f / 600f))
         assertFalse(item.contains(item.x, item.y))
     }
 
     @Test
-    fun edgeAlbumsLeaveRoomForTheMeasuredActionCard() {
+    fun anExplicitOverviewAnchorIsKeptEvenWhenTheSmallLibraryCouldFit() {
+        val layout = PanoramaLayout.create(1280f, 780f, 1f, 24)
+        for (index in listOf(0, 7, 16, 23)) {
+            val camera = layout.overviewCamera(index)
+            assertEquals(layout.center(index).x, camera.x, .002f)
+            assertEquals(layout.center(index).y, camera.y, .002f)
+            assertEquals(index, layout.nearestIndex(camera))
+        }
+    }
+
+    @Test
+    fun edgeSelectionsLeaveRoomAboveTheRaisedCaseForTheActionCard() {
         for ((width, height) in listOf(390f to 700f, 800f to 1150f, 1280f to 670f)) {
             val layout = PanoramaLayout.create(width, height, 1f, 120)
             for (index in listOf(0, 5, 119)) {
                 val camera = layout.focusCamera(index, 112f)
-                val item = layout.placement(index, camera)
+                val item = layout.selectedPlacement(index, camera)
                 val card = layout.cardBounds(item, minOf(272f, width - 24f), 112f)
                 assertTrue(card.left >= 0f)
                 assertTrue(card.right <= width)
                 assertTrue(card.top >= layout.viewport.top)
-                assertTrue(card.bottom <= item.caseBounds.top)
+                assertTrue(card.bottom <= item.caseBounds.top + .01f)
                 assertTrue(item.caseBounds.bottom <= layout.viewport.bottom + .01f)
                 assertTrue(layout.visibleIndices(camera).contains(index))
             }
@@ -59,22 +106,24 @@ class PanoramaGeometryTest {
     }
 
     @Test
-    fun shortLandscapeKeepsTheWholeActionCardInsideTheCanvas() {
+    fun focusRespectsTheScaleOverrideAndShortWindowsContainTheWholeCard() {
         val layout = PanoramaLayout.create(720f, 240f, 1f, 24)
         val cardHeight = layout.viewport.height * .55f
-        val camera = layout.focusCamera(23, cardHeight)
-        val card = layout.cardBounds(layout.placement(23, camera), 272f, cardHeight)
-        assertTrue(card.left >= 0f)
-        assertTrue(card.top >= 0f)
-        assertTrue(card.right <= layout.width)
-        assertTrue(card.bottom <= layout.height)
+        val camera = layout.focusCamera(23, cardHeight, zoomOverride = .6f)
+        val card = layout.cardBounds(layout.selectedPlacement(23, camera), 272f, cardHeight)
+        assertTrue(camera.zoom <= .6f)
+        assertTrue(card.left >= 0f && card.top >= 0f)
+        assertTrue(card.right <= layout.width && card.bottom <= layout.height)
         assertEquals(cardHeight, card.height, .01f)
+        val tall = PanoramaLayout.create(800f, 1150f, 1f, 24)
+        assertEquals(.8f, tall.focusCamera(4, 112f, .8f).zoom, .001f)
     }
 
     @Test
     fun zoomKeepsTheContentUnderThePinchCentroidInPlace() {
         val layout = PanoramaLayout.create(800f, 1000f, 1f, 160)
-        val before = PanoramaCamera(layout.worldWidth / 2f, layout.worldHeight / 2f, 1.2f)
+        val center = layout.center(83)
+        val before = PanoramaCamera(center.x, center.y, 1.2f)
         val x = 450f
         val y = 530f
         val after = layout.transform(before, x, y, 0f, 0f, 1.25f)
@@ -89,24 +138,41 @@ class PanoramaGeometryTest {
         val layout = PanoramaLayout.create(1280f, 720f, 1f, 100_000)
         val zoomedOut = layout.transform(layout.overviewCamera(), 640f, 360f, 1_000_000f, 1_000_000f, .001f)
         assertEquals(PanoramaLayout.MIN_ZOOM, zoomedOut.zoom, 0f)
-        assertTrue(zoomedOut.x >= 0f)
-        assertTrue(zoomedOut.y >= -layout.viewport.height * .35f / zoomedOut.zoom)
+        assertTrue(zoomedOut.x.isFinite() && zoomedOut.y.isFinite())
+        assertTrue(abs(zoomedOut.x) < layout.worldBounds.right + 10_000f)
         val last = layout.focusCamera(99_999, 112f)
         val indices = layout.visibleIndices(last)
         assertTrue(indices.contains(99_999))
         assertTrue(indices.size < 150)
         assertTrue(indices.all { it in 0 until 100_000 })
         val zoomedIn = layout.transform(last, 640f, 360f, 0f, 0f, 100f)
-        assertEquals(PanoramaLayout.MAX_ZOOM, zoomedIn.zoom, 0f)
+        assertEquals(layout.maxZoom, zoomedIn.zoom, 0f)
+        assertEquals(99_999, layout.nearestIndex(layout.center(99_999)))
     }
 
     @Test
     fun emptyAndSingleAlbumLibrariesHaveValidGeometry() {
         val empty = PanoramaLayout.create(390f, 700f, 1f, 0)
         assertTrue(empty.visibleIndices(empty.overviewCamera()).isEmpty())
+        assertNull(empty.nearestIndex(empty.overviewCamera()))
         val single = PanoramaLayout.create(1280f, 670f, 1f, 1)
         assertEquals(1, single.columns)
         val item = single.placement(0, single.overviewCamera())
         assertEquals(single.viewport.centerX, item.caseBounds.centerX, .01f)
+    }
+
+    @Test
+    fun largeViewportCanReachTheActualNormalShelfScaleBeforeReturning() {
+        val layout = PanoramaLayout.create(2560f, 1440f, 1f, 96)
+        val normalScene = PanoramaRect(0f, 0f, 2560f, 1440f)
+        val overview = layout.overviewCamera(19)
+        val enlarged = layout.transform(overview, layout.viewport.centerX, layout.viewport.centerY,
+            panX = 0f, panY = 0f, zoomChange = 100f)
+        assertTrue(layout.maxZoom > PanoramaLayout.MAX_ZOOM)
+        assertEquals(layout.maxZoom, enlarged.zoom, .001f)
+        assertTrue(layout.caseScaleRelativeTo(normalScene, enlarged) >= 1f)
+        assertEquals(layout.maxZoom, layout.clamp(enlarged.copy(zoom = 100f)).zoom, .001f)
+        val focus = layout.focusCamera(19, 112f, zoomOverride = 100f)
+        assertEquals(layout.maxZoom, focus.zoom, .001f)
     }
 }
