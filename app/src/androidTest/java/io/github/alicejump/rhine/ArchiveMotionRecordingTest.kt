@@ -4,6 +4,8 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.media.MediaMetadataRetriever
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -14,6 +16,7 @@ import org.junit.runner.RunWith
 import java.io.BufferedReader
 import java.io.Closeable
 import java.io.File
+import java.io.FileInputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -66,8 +69,9 @@ class ArchiveMotionRecordingTest {
                     MotionTestDevice.awaitFrames(48)
 
                     click("全景浏览")
-                    MotionTestDevice.awaitFrames(8)
-                    click("退出全景") // Deliberately reverse an in-flight expansion.
+                    MotionTestDevice.awaitFrames(2)
+                    // System Back is available before the sliding exit button reaches the screen.
+                    instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
                     MotionTestDevice.awaitFrames(48)
                     click("全景浏览")
                     MotionTestDevice.awaitFrames(54)
@@ -168,6 +172,7 @@ class ArchiveMotionRecordingTest {
 /** Runs only this test's bounded screenrecord process and finalizes its MP4 with SIGINT. */
 private class ScreenRecording(
     private val file: File,
+    private val shellPath: String,
     private val script: File,
     private val pid: Int,
     private val reader: BufferedReader,
@@ -179,25 +184,34 @@ private class ScreenRecording(
             if (!output.isDone) {
                 // Do not signal a recycled PID or someone else's recorder.
                 val arguments = MotionTestDevice.shell("cat /proc/$pid/cmdline").split('\u0000')
-                if (file.absolutePath in arguments && arguments.firstOrNull()?.endsWith("screenrecord") == true) {
+                if (shellPath in arguments && arguments.firstOrNull()?.endsWith("screenrecord") == true) {
                     MotionTestDevice.shell("kill -2 $pid")
                 }
             }
             File(file.parentFile, "${file.nameWithoutExtension}.log").writeText(output.get(10, TimeUnit.SECONDS))
+            // The recorder runs as shell. Copy its exact bytes through the shell's pipe
+            // into a file created by this app, rather than relying on emulated-storage ownership.
+            val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+            ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand("cat $shellPath")).use { input ->
+                file.outputStream().use { target -> input.copyTo(target) }
+            }
+            check(file.isFile && file.length() > 1_024) { "The screen recorder did not produce a video: ${file.name}" }
+            val metadata = MediaMetadataRetriever()
+            try {
+                FileInputStream(file).use { input ->
+                    metadata.setDataSource(input.fd)
+                    val duration = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+                    check(duration > 2_000) { "The recording is missing its motion sequence: ${file.name}" }
+                    check(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes") { "The recording has no video stream" }
+                }
+            } finally {
+                metadata.release()
+            }
         } finally {
             reader.close()
             executor.shutdownNow()
             script.delete()
-        }
-        check(file.isFile && file.length() > 1_024) { "The screen recorder did not produce a video: ${file.name}" }
-        val metadata = MediaMetadataRetriever()
-        try {
-            metadata.setDataSource(file.absolutePath)
-            val duration = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
-            check(duration > 2_000) { "The recording is missing its motion sequence: ${file.name}" }
-            check(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes") { "The recording has no video stream" }
-        } finally {
-            metadata.release()
+            MotionTestDevice.shell("rm -f $shellPath")
         }
     }
 
@@ -210,9 +224,14 @@ private class ScreenRecording(
             check(directory.isDirectory || directory.mkdirs())
             val file = File(directory, "$name.mp4")
             check(!file.exists() || file.delete()) { "A previous recording could not be replaced" }
+            val shellPath = "/data/local/tmp/rhine-motion-${SystemClock.uptimeMillis()}-$name.mp4"
             val script = File(checkNotNull(context.externalCacheDir), "$name.sh")
-            check(file.absolutePath.matches(Regex("[A-Za-z0-9_./-]+")))
-            script.writeText("echo ${'$'}${'$'}\nexec screenrecord --size $size --bit-rate 4000000 --time-limit 45 ${file.absolutePath} 2>&1\n")
+            check(script.absolutePath.matches(Regex("[A-Za-z0-9_./-]+")))
+            script.writeText(
+                "if [ \"${'$'}1\" = ready ]; then\n" +
+                    "  if test -s $shellPath; then echo ready; fi\n  exit\nfi\n" +
+                    "echo ${'$'}${'$'}\nexec screenrecord --size $size --bit-rate 4000000 --time-limit 45 $shellPath 2>&1\n",
+            )
             val reader = ParcelFileDescriptor.AutoCloseInputStream(
                 instrumentation.uiAutomation.executeShellCommand("sh ${script.absolutePath}"),
             ).bufferedReader()
@@ -221,11 +240,11 @@ private class ScreenRecording(
                 val pid = executor.submit<String> { checkNotNull(reader.readLine()) }.get(5, TimeUnit.SECONDS).trim().toInt()
                 check(pid > 1)
                 val output = executor.submit<String> { reader.readText() }
-                val recording = ScreenRecording(file, script, pid, reader, executor, output)
+                val recording = ScreenRecording(file, shellPath, script, pid, reader, executor, output)
                 try {
                     MotionTestDevice.await("The screen recorder did not start") {
                         check(!output.isDone) { "The screen recorder exited before recording the scene: ${output.get()}" }
-                        file.length() > 0
+                        MotionTestDevice.shell("sh ${script.absolutePath} ready").trim() == "ready"
                     }
                     return recording
                 } catch (error: Throwable) {
@@ -236,6 +255,7 @@ private class ScreenRecording(
                 reader.close()
                 executor.shutdownNow()
                 script.delete()
+                MotionTestDevice.shell("rm -f $shellPath")
                 throw error
             }
         }

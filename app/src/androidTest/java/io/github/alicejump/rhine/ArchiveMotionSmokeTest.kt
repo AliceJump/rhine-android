@@ -3,6 +3,7 @@ package io.github.alicejump.rhine
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.alicejump.rhine.ui.ArchiveExpansionKey
 import org.junit.Assert.assertEquals
@@ -49,13 +51,17 @@ class ArchiveMotionSmokeTest {
                 compose.onNodeWithText("全景浏览").performClick()
                 advanceUntil("Entering panorama must have an intermediate state") { expansion() in 0.25f..0.75f }
                 val entering = album("demo-0").boundsInRoot
-                val turningPoint = expansion()
                 assertEquals("Expansion must retain the scene", sceneId, scene().id)
                 assertEquals("The same album entity must survive expansion", albumId, album("demo-0").id)
                 assertTrue("The album must move or resize before expansion finishes", materiallyDifferent(normal, entering))
                 SmokeScreenshots.capture("13-motion-enter-middle", compose.activity).recycle()
 
-                compose.onNodeWithContentDescription("退出全景").performClick()
+                compose.waitForIdle()
+                val reversalOrigin = album("demo-0").boundsInRoot
+                val turningPoint = expansion()
+                // Android performClick injects a timed down/up gesture. Use the public
+                // button action here so the only motion step is the frame advanced below.
+                compose.onNodeWithContentDescription("退出全景").performSemanticsAction(SemanticsActions.OnClick)
                 compose.mainClock.advanceTimeByFrame()
                 val afterReverse = album("demo-0").boundsInRoot
                 val reversalProgress = expansion()
@@ -66,7 +72,7 @@ class ArchiveMotionSmokeTest {
                 assertEquals("Reversing must retain the same album entity", albumId, album("demo-0").id)
                 assertTrue(
                     "Changing direction must not teleport the album back to an endpoint (before=$turningPoint, after=$reversalProgress)",
-                    centerDistance(entering, afterReverse) < maxOf(24f, centerDistance(normal, entering) * .5f),
+                    centerDistance(reversalOrigin, afterReverse) < maxOf(24f, centerDistance(normal, reversalOrigin) * .5f),
                 )
                 // animateFloatAsState can consume one last old-target frame before the
                 // retarget is applied. Require the subsequent motion to actually reverse.
