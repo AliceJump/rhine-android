@@ -167,7 +167,19 @@ internal data class PanoramaLayout(
         val zoom = fit.coerceIn(.75f, 1f)
         val anchor = anchorIndex?.takeIf { it in 0 until count }?.let(::center)
             ?: PanoramaPoint(bounds.centerX, bounds.centerY)
-        return clamp(PanoramaCamera(anchor.x, anchor.y, zoom))
+        fun composeAxis(preferred: Float, start: Float, end: Float, visible: Float): Float {
+            if (end - start <= visible) return (start + end) / 2f
+            val half = visible / 2f
+            return preferred.coerceIn(start + half, end - half)
+        }
+        // The overview frames the room on every axis that fits. A browsing anchor only
+        // chooses the portion of a larger room; it cannot push its edge into the center
+        // and expose an avoidable half-screen of empty floor outside the collection.
+        return PanoramaCamera(
+            composeAxis(anchor.x, bounds.left, bounds.right, viewport.width / zoom),
+            composeAxis(anchor.y, bounds.top, bounds.bottom, viewport.height / zoom),
+            zoom,
+        )
     }
 
     fun focusCamera(index: Int, cardHeight: Float, zoomOverride: Float? = null): PanoramaCamera {

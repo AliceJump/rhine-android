@@ -174,7 +174,7 @@ internal fun PanoramaShelf(
         fun overview() {
             showActions = false
             cameraIntent = ShelfCameraIntent.Overview
-            targetCamera = layout.overviewCamera(anchorIndex)
+            targetCamera = layout.overviewCamera()
         }
         fun centerSelection() {
             val index = currentSelectedIndex

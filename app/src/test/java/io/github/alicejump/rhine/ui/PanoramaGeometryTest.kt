@@ -77,13 +77,49 @@ class PanoramaGeometryTest {
     }
 
     @Test
-    fun anExplicitOverviewAnchorIsKeptEvenWhenTheSmallLibraryCouldFit() {
+    fun smallCollectionOverviewCentersTheWholeRoomEvenWithAnEdgeAnchor() {
         val layout = PanoramaLayout.create(1280f, 780f, 1f, 24)
         for (index in listOf(0, 7, 16, 23)) {
             val camera = layout.overviewCamera(index)
-            assertEquals(layout.center(index).x, camera.x, .002f)
-            assertEquals(layout.center(index).y, camera.y, .002f)
-            assertEquals(index, layout.nearestIndex(camera))
+            assertEquals(layout.worldBounds.centerX, camera.x, .002f)
+            assertEquals(layout.worldBounds.centerY, camera.y, .002f)
+            for (album in 0 until 24) {
+                val bounds = layout.placement(album, camera).caseBounds
+                assertTrue(bounds.left >= layout.viewport.left - .01f)
+                assertTrue(bounds.right <= layout.viewport.right + .01f)
+                assertTrue(bounds.top >= layout.viewport.top - .01f)
+                assertTrue(bounds.bottom <= layout.viewport.bottom + .01f)
+            }
+        }
+    }
+
+    @Test
+    fun largeCollectionKeepsMiddleOverviewAnchorsButStopsAtContentEdges() {
+        val layout = PanoramaLayout.create(1280f, 780f, 1f, 100_000)
+        val middle = layout.overviewCamera(50_003)
+        assertEquals(layout.center(50_003).x, middle.x, .002f)
+        assertEquals(layout.center(50_003).y, middle.y, .002f)
+        assertEquals(50_003, layout.nearestIndex(middle))
+        for (index in listOf(0, 99_999)) {
+            val camera = layout.overviewCamera(index)
+            val halfWidth = layout.viewport.width / (2f * camera.zoom)
+            val halfHeight = layout.viewport.height / (2f * camera.zoom)
+            assertTrue(camera.x - halfWidth >= layout.worldBounds.left - .25f)
+            assertTrue(camera.x + halfWidth <= layout.worldBounds.right + .25f)
+            assertTrue(camera.y - halfHeight >= layout.worldBounds.top - .25f)
+            assertTrue(camera.y + halfHeight <= layout.worldBounds.bottom + .25f)
+        }
+    }
+
+    @Test
+    fun narrowOverviewCentersTheAxisThatFitsAndBoundsTheOtherOne() {
+        val layout = PanoramaLayout.create(411f, 700f, 1f, 24)
+        for (index in listOf(0, 23)) {
+            val camera = layout.overviewCamera(index)
+            assertEquals(layout.worldBounds.centerY, camera.y, .002f)
+            val halfWidth = layout.viewport.width / (2f * camera.zoom)
+            assertTrue(camera.x - halfWidth >= layout.worldBounds.left - .01f)
+            assertTrue(camera.x + halfWidth <= layout.worldBounds.right + .01f)
         }
     }
 

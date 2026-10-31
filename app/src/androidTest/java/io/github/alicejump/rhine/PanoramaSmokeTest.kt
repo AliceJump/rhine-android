@@ -108,15 +108,19 @@ class PanoramaSmokeTest {
             shelf.assertSelected("demo-5")
             assertEquals("Re-entering must preserve the lift", 1f, shelf.focus("demo-5"), .01f)
             overview()
-            val anchorBeforeCancel = shelf.anchorId()
             shelf.touchBlank()
             shelf.assertSelected("")
-            assertEquals(anchorBeforeCancel, shelf.anchorId())
+            // The whole-room overview centers the middle lane between its two middle slots.
+            // Either equally near case is a valid return position when selection is cleared.
+            val cancelledAnchor = shelf.anchorId()
+            assertTrue("Cancellation must anchor the current whole-room view: $cancelledAnchor",
+                cancelledAnchor in setOf("demo-11", "demo-12"))
             assertTrue("Blank cancellation lowers the cases", shelf.visibleAlbums().all { it.config[ArchiveAlbumFocusKey] < .001f })
             compose.onNodeWithTag("panorama-actions").assertDoesNotExist()
             pressBack()
             shelf.awaitMode(false)
             shelf.assertSelected("")
+            assertEquals("Returning to the normal shelf must preserve the browsing position", cancelledAnchor, shelf.anchorId())
         } finally {
             step("phone restore orientation")
             compose.activityRule.scenario.onActivity { it.requestedOrientation = originalOrientation }
