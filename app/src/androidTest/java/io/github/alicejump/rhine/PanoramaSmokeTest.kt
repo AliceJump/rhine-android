@@ -280,6 +280,9 @@ class PanoramaSmokeTest {
             }
         } catch (_: IllegalStateException) {
             // ActivityScenario can briefly have no current Activity during recreation.
+        } catch (failure: NullPointerException) {
+            // Test core 1.6 also reports that normal recreation gap with this exact exception.
+            if (failure.message != "Cannot run onActivity since Activity has been destroyed already") throw failure
         }
         return window
     }
