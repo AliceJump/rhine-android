@@ -44,9 +44,10 @@ class ArchiveMotionSmokeTest {
                 }
                 compose.waitForIdle()
                 shelf.assertSelected("")
+                compose.mainClock.autoAdvance = false
+                assertPartialUnselectedPinchReturnsToOriginalPosition()
                 val sceneId = scene().id
                 val albumId = album("demo-0").id
-                compose.mainClock.autoAdvance = false
                 compose.onNodeWithTag("archive-album-demo-0", useUnmergedTree = true)
                     .performSemanticsAction(SemanticsActions.OnClick)
                 settle()
@@ -173,6 +174,36 @@ class ArchiveMotionSmokeTest {
                 compose.activityRule.scenario.onActivity { it.requestedOrientation = originalOrientation }
             }
         }
+    }
+
+    private fun assertPartialUnselectedPinchReturnsToOriginalPosition() {
+        assertEquals("The unselected shelf starts at its original browsing position", "demo-0", shelf.anchorId())
+        val original = shelf.caseBounds("demo-0")
+        val canvas = shelf.canvasBounds()
+        // A normal-shelf gesture starts inside that visible scene, not the panorama viewport.
+        val pivot = canvas.center - scene().boundsInRoot.topLeft
+        HeldArchivePinch(
+            compose.onNodeWithTag("archive-scene", useUnmergedTree = true),
+            pivot,
+            canvas.width * .30f,
+        ).use { gesture ->
+            gesture.moveToScale(.88f)
+            advanceUntil("A light unselected pinch must partially expand the shelf") {
+                expansion() in .01f.. .99f
+            }
+            val partial = expansion()
+            shelf.assertSelected("")
+            gesture.moveToScale(1f)
+            advanceUntil("Moving the fingers apart must reverse the partial expansion") {
+                expansion() < partial
+            }
+        }
+        settle()
+        assertEquals(0f, expansion(), .001f)
+        shelf.assertSelected("")
+        assertEquals("Cancelling a partial pinch must retain the original browsing position", "demo-0", shelf.anchorId())
+        assertTrue("Cancelling a partial pinch must return the case to its original position",
+            !materiallyDifferent(original, shelf.caseBounds("demo-0")))
     }
 
     private fun scene() = compose.onNodeWithTag("archive-scene", useUnmergedTree = true).fetchSemanticsNode()

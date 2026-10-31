@@ -190,7 +190,9 @@ internal fun PanoramaShelf(
             ))
         }
         fun changeMode(expanded: Boolean) {
-            if (!expanded && currentSelectedIndex < 0) {
+            // Only a complete, user-controlled panorama provides a new return position.
+            if (!expanded && currentSelectedIndex < 0 && currentExpansion > .999f &&
+                cameraIntent == ShelfCameraIntent.Free) {
                 layout.nearestIndex(currentCamera)?.let { albums.getOrNull(it)?.let(currentOnBrowse) }
             }
             currentOnChange(expanded)
