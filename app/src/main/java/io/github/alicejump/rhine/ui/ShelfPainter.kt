@@ -83,17 +83,23 @@ internal data class ShelfHit(val albumId: String, val quad: FloatArray) {
 }
 
 internal class ShelfPainter {
+    private val monospace = Typeface.create("monospace", Typeface.NORMAL)
+    private val sansSerif = Typeface.create("sans-serif", Typeface.NORMAL)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL) }
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = sansSerif }
     private val matrix = Matrix()
     private val path = Path()
+    private val spriteRect = RectF()
     private val palette = arrayOf(
         intArrayOf(0xFF577C7C.toInt(), 0xFFD2DAD1.toInt()),
         intArrayOf(0xFF655A7B.toInt(), 0xFFD2CCD5.toInt()),
         intArrayOf(0xFFAD8559.toInt(), 0xFFE1D6BD.toInt()),
         intArrayOf(0xFF516B8A.toInt(), 0xFFC6D4DA.toInt()),
     )
+    private val placeholderShaders = palette.map {
+        LinearGradient(0f, 0f, 512f, 512f, it[0], it[1], Shader.TileMode.CLAMP)
+    }
 
     private fun drawBackground(canvas: AndroidCanvas, width: Float, height: Float, density: Float, colors: ShelfColors) {
         canvas.drawColor(colors.background)
@@ -154,7 +160,7 @@ internal class ShelfPainter {
                 line.strokeWidth = density * .7f
                 val shelfY = bounds.bottom + 6f * density
                 canvas.drawLine(bounds.left - 7f * density, shelfY, bounds.right + 7f * density, shelfY, line)
-                text.typeface = Typeface.create("monospace", Typeface.NORMAL)
+                text.typeface = monospace
                 text.textSize = 9f * density
                 text.color = withAlpha(if (item.focus > .5f) colors.accent else colors.registration, decorationAlpha)
                 val label = "${(item.index + 1).toString().padStart(2, '0')} / ${album.title.replace('\n', ' ')}"
@@ -188,8 +194,7 @@ internal class ShelfPainter {
         if (cover != null) {
             canvas.drawBitmap(cover, 0f, 0f, paint)
         } else {
-            val colours = palette[Math.floorMod(album?.id?.hashCode() ?: index, palette.size)]
-            paint.shader = LinearGradient(0f, 0f, 512f, 512f, colours[0], colours[1], Shader.TileMode.CLAMP)
+            paint.shader = placeholderShaders[Math.floorMod(album?.id?.hashCode() ?: index, placeholderShaders.size)]
             canvas.drawRect(0f, 0f, 512f, 512f, paint)
             paint.shader = null
             line.color = AndroidColor.argb(alpha * 2 / 3, 245, 244, 236)
@@ -199,7 +204,7 @@ internal class ShelfPainter {
             canvas.drawLine(0f, 0f, 512f, 512f, line)
             text.color = AndroidColor.argb(alpha, 248, 247, 239)
             text.textSize = 32f
-            text.typeface = Typeface.create("monospace", Typeface.NORMAL)
+            text.typeface = monospace
             canvas.drawText("A / ${(index + 1).toString().padStart(3, '0')}", 33f, 63f, text)
             text.textSize = 15f
             canvas.drawText("LOCAL AUDIO ARCHIVE", 33f, 475f, text)
@@ -213,7 +218,8 @@ internal class ShelfPainter {
         paint.shader = null
         paint.alpha = alpha
         if (asset != null) {
-            canvas.drawBitmap(asset.bitmap, null, RectF(0f, 0f, asset.logicalSize, asset.logicalSize), paint)
+            spriteRect.set(0f, 0f, asset.logicalSize, asset.logicalSize)
+            canvas.drawBitmap(asset.bitmap, null, spriteRect, paint)
         } else {
             polygon(floatArrayOf(130f, 109f, 462f, 247f, 462f, 506f, 130f, 368f))
             line.color = AndroidColor.argb(alpha, 143, 147, 141)
@@ -224,7 +230,7 @@ internal class ShelfPainter {
             val labelState = canvas.save()
             canvas.rotate(25f, 151f, 112f)
             text.color = AndroidColor.argb(alpha, 49, 53, 47)
-            text.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            text.typeface = sansSerif
             text.textSize = 8f
             canvas.drawText(album.title.replace('\n', ' ').uppercase(Locale.ROOT).take(24), 151f, 112f, text)
             canvas.restoreToCount(labelState)
