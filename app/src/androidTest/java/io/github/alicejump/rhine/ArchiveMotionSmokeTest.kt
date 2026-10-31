@@ -58,12 +58,19 @@ class ArchiveMotionSmokeTest {
                 compose.onNodeWithContentDescription("退出全景").performClick()
                 compose.mainClock.advanceTimeByFrame()
                 val afterReverse = album("demo-0").boundsInRoot
-                assertTrue("Reversal must start from the in-flight progress", expansion() > 0f && expansion() <= turningPoint + .04f)
+                val reversalProgress = expansion()
                 assertTrue(
-                    "Changing direction must not teleport the album back to an endpoint",
+                    "Reversal must retain an intermediate state (before=$turningPoint, after=$reversalProgress)",
+                    reversalProgress > 0f && reversalProgress < 1f,
+                )
+                assertEquals("Reversing must retain the same album entity", albumId, album("demo-0").id)
+                assertTrue(
+                    "Changing direction must not teleport the album back to an endpoint (before=$turningPoint, after=$reversalProgress)",
                     centerDistance(entering, afterReverse) < maxOf(24f, centerDistance(normal, entering) * .5f),
                 )
-                advanceUntil("The in-flight expansion should move back toward the shelf") {
+                // animateFloatAsState can consume one last old-target frame before the
+                // retarget is applied. Require the subsequent motion to actually reverse.
+                advanceUntil("The in-flight expansion should move back toward the shelf (turn=$turningPoint)") {
                     expansion() > 0f && expansion() < turningPoint * .7f
                 }
                 SmokeScreenshots.capture("14-motion-reverse-middle", compose.activity).recycle()

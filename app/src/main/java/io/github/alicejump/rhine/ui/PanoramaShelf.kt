@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
@@ -66,7 +67,7 @@ internal fun PanoramaShelf(
         spring(dampingRatio = 1f, stiffness = 190f), label = "panorama-lift")
     val preview = albums.isNotEmpty() && albums.all { it.tracks.isEmpty() }
 
-    BoxWithConstraints(modifier.fillMaxSize().testTag("archive-scene")
+    BoxWithConstraints(modifier.fillMaxSize().clipToBounds().testTag("archive-scene")
         .semantics { this[ArchiveExpansionKey] = expansion }) {
         val width = constraints.maxWidth.toFloat()
         val height = constraints.maxHeight.toFloat()
@@ -268,11 +269,16 @@ internal fun PanoramaShelf(
         }
 
         if (expansion < .999f) {
-            Row(Modifier.offset { IntOffset(normalScene.left.roundToInt(), normalScene.top.roundToInt()) }
-                .width(with(density) { normalScene.width.toDp() }).padding(horizontal = 14.dp, vertical = 10.dp)
-                .graphicsLayer { alpha = 1f - expansion }, horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("SPECIMEN / MARBLE", color = colors.onSurfaceVariant, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                Text("${albums.size.toString().padStart(2, '0')} ALBUMS", color = colors.onSurfaceVariant, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+            Box(Modifier.offset { IntOffset(normalClip.left.roundToInt(), normalClip.top.roundToInt()) }
+                .width(with(density) { normalClip.width.toDp() }).height(with(density) { normalClip.height.toDp() })
+                .clipToBounds()) {
+                Row(Modifier.offset { IntOffset((normalScene.left - normalClip.left).roundToInt(),
+                    (normalScene.top - normalClip.top).roundToInt()) }
+                    .width(with(density) { normalScene.width.toDp() }).padding(horizontal = 14.dp, vertical = 10.dp)
+                    .graphicsLayer { alpha = 1f - expansion }, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("SPECIMEN / MARBLE", color = colors.onSurfaceVariant, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text("${albums.size.toString().padStart(2, '0')} ALBUMS", color = colors.onSurfaceVariant, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
             }
         }
         if (expansion > .001f) {

@@ -91,9 +91,13 @@ class ArchiveMotionRecordingTest {
     }
 
     private fun awaitAction(label: String) {
-        MotionTestDevice.await("Visible action '$label' was not available during motion recording") {
-            val node = action(label)
-            (node != null).also { node?.recycle() }
+        try {
+            MotionTestDevice.await("Visible action '$label' was not available during motion recording") {
+                val node = action(label)
+                (node != null).also { node?.recycle() }
+            }
+        } catch (error: AssertionError) {
+            throw AssertionError("${error.message}\nActive accessibility window:\n${windowSummary()}", error)
         }
     }
 
@@ -107,9 +111,40 @@ class ArchiveMotionRecordingTest {
         }
     }
 
-    private fun action(label: String): AccessibilityNodeInfo? = find(automation.rootInActiveWindow) { node ->
-        node.isVisibleToUser && node.isEnabled && node.isClickable &&
+    private fun action(label: String): AccessibilityNodeInfo? {
+        var node = find(automation.rootInActiveWindow) { node ->
+            node.isVisibleToUser && node.isEnabled &&
             (node.contentDescription?.toString()?.contains(label) == true || node.text?.toString() == label)
+        } ?: return null
+        // Compose may expose the Text separately from the button that owns ACTION_CLICK.
+        repeat(8) {
+            if (node.isVisibleToUser && node.isEnabled &&
+                node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }) return node
+            val parent = node.parent
+            node.recycle()
+            node = parent ?: return null
+        }
+        node.recycle()
+        return null
+    }
+
+    private fun windowSummary(): String = buildString {
+        var count = 0
+        fun appendNode(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null) return
+            try {
+                if (count++ >= 80 || depth > 12) return
+                append("  ".repeat(depth))
+                append("${node.className} text=${node.text} desc=${node.contentDescription}")
+                append(" visible=${node.isVisibleToUser} enabled=${node.isEnabled} clickable=${node.isClickable}")
+                appendLine(" actions=${node.actionList.map { it.id to it.label }}")
+                for (index in 0 until node.childCount) appendNode(node.getChild(index), depth + 1)
+            } finally {
+                node.recycle()
+            }
+        }
+        appendNode(automation.rootInActiveWindow, 0)
+        if (count == 0) append("<no active window>")
     }
 
     private fun find(node: AccessibilityNodeInfo?, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
