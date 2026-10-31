@@ -15,7 +15,7 @@ fun RhineTheme(dark: Boolean, accentIndex: Int, content: @Composable () -> Unit)
     val accent = listOf(ArchiveOrange, Color(0xFF5B8F85), Color(0xFF557BA4))[accentIndex.coerceIn(0, 2)]
     val colors = if (dark) darkColorScheme(
         primary = accent,
-        onPrimary = Color(0xFF171A16),
+        onPrimary = Color.Black,
         secondary = Color(0xFFCBD0C2),
         background = Color(0xFF1D211D),
         onBackground = Paper,
@@ -26,7 +26,7 @@ fun RhineTheme(dark: Boolean, accentIndex: Int, content: @Composable () -> Unit)
         outline = Color(0xFF6D7367),
     ) else lightColorScheme(
         primary = accent,
-        onPrimary = Color.White,
+        onPrimary = Color.Black,
         secondary = Ink,
         background = Paper,
         onBackground = Ink,

@@ -50,7 +50,7 @@ claim to include RhinE's entire 60-frame front-facing inspection sequence.
 1. Select a new upstream commit explicitly, rather than downloading from a moving branch.
 2. Read its license and any resource-specific notices before importing material.
 3. Replace the image and metadata together; the cover quadrilateral must match the image.
-4. Update `assets/rhine/upstream.json`, including the original paths, Git blob SHAs, and
+4. Update `app/src/main/assets/rhine/upstream.json`, including the original paths, Git blob SHAs, and
    checksums, and preserve the relevant license text in the APK.
 5. Inspect the shelf on a phone and a wider display with square and non-square user
    cover art, and check selection and touch hit targets.

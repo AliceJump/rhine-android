@@ -20,7 +20,7 @@ Use the Android emulator smoke job for playback lifecycle and substantial UI cha
 
 ## Sources and changes
 
-- Preserve the source commit, asset hashes and licence notices in `docs/UPSTREAM.md`, `THIRD_PARTY_NOTICES.md`, and `assets/rhine/upstream.json`.
+- Preserve the source commit, asset hashes and licence notices in `docs/UPSTREAM.md`, `THIRD_PARTY_NOTICES.md`, and `app/src/main/assets/rhine/upstream.json`.
 - Do not add third-party songs or album covers. The debug test WAV is a generated test signal, not a library entry.
 - Keep changes independently reviewable. Use a feature branch and PR; check the complete diff against `origin/main` and exclude local SDK paths, build outputs and signing material.
 - Before merging, verify CI and actual CodeRabbit coverage for the latest PR HEAD. Check inline threads, review bodies and Conversation findings. Fix valid findings and let CodeRabbit confirm them; do not manually resolve its threads or dismiss reviews to clear status.

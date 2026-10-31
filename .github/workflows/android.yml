@@ -111,9 +111,10 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          # Preserve app-scoped screenshots until adb pulls them after the tests.
           script: >-
             smoke_status=0;
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest || smoke_status=$?;
+            ./gradlew --no-daemon -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true :app:connectedDebugAndroidTest || smoke_status=$?;
             mkdir -p emulator-artifacts;
             adb pull /sdcard/Android/data/io.github.alicejump.rhine/files/screenshots emulator-artifacts/screenshots || smoke_status=1;
             adb logcat -d -v threadtime > emulator-artifacts/logcat.txt;
