@@ -188,13 +188,17 @@ class RhineViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearAlbumSelection() { selectedAlbumId = null }
 
-    fun playAlbum(album: Album, index: Int = 0) {
+    fun playAlbum(album: Album, index: Int = 0) =
+        startAlbumPlayback(album, index, updateSelection = true)
+
+    /** Global controls can start a queue without changing the shelf's visual selection. */
+    private fun startAlbumPlayback(album: Album, index: Int, updateSelection: Boolean) {
         if (album.tracks.isEmpty()) {
             message = "这是示例档案，导入音乐后即可播放。"
             return
         }
         val player = controller ?: run { message = "播放服务尚未连接，请稍后重试。"; return }
-        selectedAlbumId = album.id
+        if (updateSelection) selectedAlbumId = album.id
         player.setMediaItems(album.tracks.map { it.toMediaItem() }, index.coerceIn(album.tracks.indices), 0)
         player.prepare()
         player.play()
@@ -209,7 +213,8 @@ class RhineViewModel(application: Application) : AndroidViewModel(application) {
     fun togglePlayback() {
         val player = controller ?: return
         if (player.currentMediaItem == null) {
-            albums.firstOrNull { it.id == selectedAlbumId }?.let(::playAlbum)
+            (albums.firstOrNull { it.id == selectedAlbumId } ?: albums.firstOrNull())
+                ?.let { startAlbumPlayback(it, 0, updateSelection = false) }
         } else if (player.isPlaying) player.pause() else {
             if (player.playbackState == Player.STATE_ENDED) player.seekToDefaultPosition()
             if (player.playbackState == Player.STATE_IDLE) player.prepare()

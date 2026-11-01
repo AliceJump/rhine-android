@@ -515,7 +515,7 @@ private fun MiniPlayer(model: RhineViewModel, onOpen: () -> Unit, compact: Boole
                 modifier = Modifier.padding(top = 4.dp))
         }
         IconButton(onClick = model::togglePlayback,
-            enabled = state.connected && (state.trackId != null || model.selectedAlbumId != null)) {
+            enabled = state.connected && (state.trackId != null || model.tracks.isNotEmpty())) {
             Icon(if (state.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.playing) "暂停" else "播放")
         }
         IconButton(onClick = model::next, enabled = state.trackId != null) { Icon(Icons.Default.SkipNext, "下一首") }
@@ -560,7 +560,7 @@ private fun PlayingPage(model: RhineViewModel, onImport: () -> Unit, canImport: 
             }
             IconButton(onClick = model::previous, enabled = state.trackId != null) { Icon(Icons.Default.SkipPrevious, "上一首", Modifier.size(30.dp)) }
             FilledIconButton(onClick = model::togglePlayback,
-                enabled = state.connected && (state.trackId != null || model.selectedAlbumId != null),
+                enabled = state.connected && (state.trackId != null || model.tracks.isNotEmpty()),
                 modifier = Modifier.padding(horizontal = 16.dp).size(64.dp), shape = RoundedCornerShape(0.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = colors.onSurface, contentColor = colors.surface)) {
                 Icon(if (state.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.playing) "暂停播放" else "开始播放", Modifier.size(30.dp))
