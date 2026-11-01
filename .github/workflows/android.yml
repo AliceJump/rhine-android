@@ -111,16 +111,18 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          # Bound instrumentation waits so the following artifact pulls still run on a hang.
           # Preserve app-scoped screenshots until adb pulls them after the tests.
           script: >-
             smoke_status=0;
-            ./gradlew --no-daemon -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true :app:connectedDebugAndroidTest || smoke_status=$?;
+            timeout --signal=INT --kill-after=20s 10m ./gradlew --no-daemon -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true :app:connectedDebugAndroidTest || smoke_status=$?;
             mkdir -p emulator-artifacts;
             adb pull /sdcard/Android/data/io.github.alicejump.rhine/files/screenshots emulator-artifacts/screenshots || smoke_status=1;
+            adb pull /sdcard/Android/data/io.github.alicejump.rhine/files/recordings emulator-artifacts/recordings || smoke_status=1;
             adb logcat -d -v threadtime > emulator-artifacts/logcat.txt;
             exit "$smoke_status"
 
-      - name: Upload screenshots and instrumentation reports
+      - name: Upload screenshots, motion recordings and instrumentation reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
